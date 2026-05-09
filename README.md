@@ -55,6 +55,9 @@ ozonv2/
 ├── fix-button.js              # 按钮修复
 ├── fix-1688-button.js         # 1688 按钮修复
 ├── fix-category-type.js       # 分类类型修复
+├── _locales/zh_CN/            # 中文国际化
+├── test/                      # 测试页面
+├── docs/archive/              # 历史归档文档
 ├── assets/                    # 图标资源
 └── content-scripts/           # 内容脚本
     ├── content.js             # 通用内容脚本
@@ -112,6 +115,16 @@ ozonv2/
 - 请勿滥用批量查询功能，避免触发 Ozon 限流
 - 1688 匹配功能需要登录 1688 账号
 - 部分功能需要访问卖家后台（seller.ozon.ru）
+
+## 文档
+
+常用文档（仓库根目录）：
+- [QUICKSTART.md](QUICKSTART.md) — 快速启动
+- [TESTING.md](TESTING.md) — 测试指南
+- [DEVELOPMENT.md](DEVELOPMENT.md) — 开发说明
+- [TODO.md](TODO.md) — 待办事项
+
+历史资料（阶段性报告、逆向分析、问题修复记录等）已归档到 [docs/archive/](docs/archive/README.md)。
 
 ## 许可证
 仅供学习和个人使用
