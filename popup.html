@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>长腿欧巴 - 智能选品助手</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:420px;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:500px}
+.header{text-align:center;margin-bottom:14px;color:white}
+.header h1{font-size:22px;margin-bottom:3px}
+.header p{font-size:11px;opacity:0.9}
+.section{background:white;border-radius:10px;padding:12px;margin-bottom:12px;box-shadow:0 4px 6px rgba(0,0,0,0.1)}
+.section h2{font-size:13px;color:#333;margin-bottom:8px;border-bottom:2px solid #667eea;padding-bottom:4px}
+.btn{width:100%;padding:10px;border:none;border-radius:8px;font-size:13px;cursor:pointer;margin-bottom:8px;transition:all 0.3s;font-weight:500}
+.btn-primary{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white}
+.btn-hot{background:linear-gradient(135deg,#f093fb 0%,#f5576c 100%);color:white}
+.btn-secondary{background:linear-gradient(135deg,#11998e 0%,#38ef7d 100%);color:white}
+.btn:disabled{background:#ccc;cursor:not-allowed}
+.status{padding:8px;border-radius:8px;font-size:11px;margin-bottom:8px;display:none}
+.status.success{background:#d4edda;color:#155724;display:block}
+.status.error{background:#f8d7da;color:#721c24;display:block}
+.status.loading{background:#fff3cd;color:#856404;display:block}
+.results{max-height:280px;overflow-y:auto;font-size:11px}
+.product-item{padding:8px;border:1px solid #eee;border-radius:6px;margin-bottom:6px;background:#fafafa}
+.product-title{font-weight:500;margin-bottom:2px;word-break:break-all}
+.product-id{color:#999}
+.empty-state{text-align:center;color:#999;padding:20px}
+.filter-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+.filter-item{display:flex;flex-direction:column}
+.filter-item label{font-size:10px;color:#666;margin-bottom:2px}
+.filter-item input,.filter-item select{padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:11px}
+.filter-full{grid-column:1/-1}
+.mode-tabs{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap}
+.mode-tab{padding:5px 10px;border:1px solid #ddd;border-radius:6px;font-size:10px;cursor:pointer;background:#f8f8f8}
+.mode-tab.active{background:#667eea;color:white;border-color:#667eea}
+.toggle-filters{font-size:11px;color:#667eea;cursor:pointer;text-align:right;margin-bottom:6px}
+.filters-panel{display:none}
+.filters-panel.show{display:block}
+</style>
+</head>
+<body>
+<div class="header"><h1>长腿欧巴</h1><p>智能选品助手 - Ozon FBS商品筛选</p></div>
+<div class="section">
+<h2>选品方式</h2>
+<div class="mode-tabs" id="modeTabs">
+<div class="mode-tab active" data-mode="hot">🔥 热销榜单</div>
+<div class="mode-tab" data-mode="newest">🆕 最新上架</div>
+<div class="mode-tab" data-mode="category">📂 按类目</div>
+<div class="mode-tab" data-mode="shop">🏪 查店铺</div>
+<div class="mode-tab" data-mode="random">🎲 完全随机</div>
+</div>
+<div id="categoryModePanel" style="display:none;margin-bottom:8px">
+  <div style="background:#fffbea;border:1px solid #ffe58f;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11px;color:#7c5200">
+    <b>💡 使用方式：</b>直接输入 Ozon 前台类目 URL 中的数字 ID<br>
+    <span style="color:#999">例如 <b>https://www.ozon.ru/category/posudomoechnye-mashiny-<u>10515</u>/</b> → 输入 <b>10515</b></span>
+  </div>
+  <div style="margin-bottom:6px">
+    <label style="font-size:11px;color:#555;font-weight:600">🆔 前台类目 ID（支持多个，逗号分隔）</label>
+    <input type="text" id="categoryIds" placeholder="如: 10515  或  10515,31635,10502" style="width:100%;margin-top:4px;padding:6px 8px;border:2px solid #667eea;border-radius:6px;font-size:12px;box-sizing:border-box">
+  </div>
+  <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">
+    <span style="font-size:10px;color:#888;align-self:center">快选：</span>
+    <button class="cat-quick-btn" data-id="10515" data-name="洗碗机" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">洗碗机 10515</button>
+    <button class="cat-quick-btn" data-id="10502" data-name="冰箱" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">冰箱 10502</button>
+    <button class="cat-quick-btn" data-id="31635" data-name="双门冰箱" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">双门冰箱 31635</button>
+    <button class="cat-quick-btn" data-id="10500" data-name="家电" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">家用电器 10500</button>
+  </div>
+  <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center">
+    <label style="font-size:10px;color:#666;white-space:nowrap">抓取数量</label>
+    <select id="catMaxCount" style="padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+      <option value="50">50条</option>
+      <option value="100" selected>100条</option>
+      <option value="200">200条</option>
+      <option value="500">500条（较慢）</option>
+    </select>
+    <label style="font-size:10px;color:#666;white-space:nowrap;margin-left:4px">排序</label>
+    <select id="catSortBy" style="padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+      <option value="popular" selected>综合排序</option>
+      <option value="price_asc">价格升序</option>
+      <option value="price_desc">价格降序</option>
+      <option value="rating">评分优先</option>
+      <option value="sales">月销量优先</option>
+    </select>
+  </div>
+  <button id="ozonPublicSearchBtn" type="button" style="width:100%;padding:10px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;font-weight:700;letter-spacing:0.5px">
+    🚀 批量抓取该类目商品
+  </button>
+  <div id="catProgressBar" style="display:none;margin-top:6px;background:#eee;border-radius:4px;height:6px;overflow:hidden">
+    <div id="catProgressFill" style="height:100%;background:linear-gradient(90deg,#667eea,#764ba2);width:0%;transition:width 0.3s"></div>
+  </div>
+  <div id="catProgressText" style="display:none;font-size:10px;color:#667eea;text-align:center;margin-top:3px"></div>
+</div>
+<div id="shopModePanel" style="display:none;margin-bottom:8px">
+<div class="filter-item">
+<label>店铺ID或链接（从ozon.ru店铺页面获取）</label>
+<input type="text" id="shopId" placeholder="如: 123456 或 https://www.ozon.ru/seller/123456/" style="padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:11px;width:100%;margin-bottom:6px">
+<small style="font-size:10px;color:#999">提示：打开店铺页面，从URL中复制店铺ID</small>
+</div>
+</div>
+<div class="section">
+<h2>🎯 操作</h2>
+<button class="btn btn-primary" id="pickProducts">🎲 当前页随机挑选</button>
+<button class="btn btn-hot" id="bulkFetch">📦 批量获取商品</button>
+<button class="btn btn-secondary" id="find1688" disabled>🔍 查找1688同款</button>
+<input type="file" id="singleImageInput" accept="image/*" style="display:none">
+<button class="btn btn-secondary" id="uploadImageSearch" style="background:linear-gradient(135deg,#ffa000 0%,#e65100 100%)">📷 上传图片搜索1688</button>
+<button class="btn btn-secondary" id="exportResults" disabled>📥 导出结果</button>
+</div>
+<div id="sellerStatus" style="display:none;padding:6px 10px;margin:0 0 10px;border-radius:8px;font-size:10px"></div>
+<div id="status1688" style="display:none;padding:6px 10px;margin:0 0 10px;border-radius:8px;font-size:10px"></div>
+<div id="status" class="status"></div>
+<div class="section">
+<h2 style="display:flex;justify-content:space-between;align-items:center">
+  <span>📋 选品结果 <span id="resultCount" style="font-size:11px;color:#999;font-weight:normal"></span></span>
+  <a id="catExportLink" href="#" style="font-size:11px;color:#667eea;text-decoration:none;display:none">导出</a>
+</h2>
+<div class="results" id="results"><div class="empty-state">选择选品方式后点击"批量获取商品"</div></div>
+</div>
+<div class="section" id="formulaSection" style="display:none">
+<h2>商品筛选公式</h2>
+<textarea id="formula" placeholder="输入筛选公式，如: price > 100 && soldCount > 5" style="width:100%;height:60px;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:11px;font-family:monospace;resize:vertical;margin-bottom:6px"></textarea>
+<button class="btn btn-secondary" id="applyFormula" style="background:#667eea">应用公式筛选</button>
+</div>
+<script src="popup.js"></script>
+<script src="1688-auto-compare.js"></script>
+<script src="content-scripts/category-tree.js"></script>
+</body>
+</html>

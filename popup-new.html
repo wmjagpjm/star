@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>长腿欧巴 V2 - 智能选品助手</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  width: 480px;
+  padding: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 600px;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 16px;
+  color: white;
+}
+.header h1 { font-size: 24px; margin-bottom: 4px; }
+.header p { font-size: 12px; opacity: 0.9; }
+
+.section {
+  background: white;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+.section h2 {
+  font-size: 14px;
+  color: #333;
+  margin-bottom: 10px;
+  border-bottom: 2px solid #667eea;
+  padding-bottom: 5px;
+}
+
+.btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: all 0.3s;
+  font-weight: 600;
+}
+.btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+.btn-hot { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; }
+.btn-secondary { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; }
+.btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+.btn:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+
+.status {
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  display: none;
+}
+.status.success { background: #d4edda; color: #155724; display: block; }
+.status.error { background: #f8d7da; color: #721c24; display: block; }
+.status.loading { background: #fff3cd; color: #856404; display: block; }
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #eee;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+  display: none;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  width: 0%;
+  transition: width 0.3s;
+}
+
+.mode-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.mode-tab {
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  background: #f8f8f8;
+  transition: all 0.2s;
+}
+.mode-tab.active {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.filter-item {
+  display: flex;
+  flex-direction: column;
+}
+.filter-item label {
+  font-size: 10px;
+  color: #666;
+  margin-bottom: 3px;
+  font-weight: 500;
+}
+.filter-item input, .filter-item select {
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.results {
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+.product-card {
+  padding: 10px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background: #fafafa;
+  display: flex;
+  gap: 10px;
+}
+.product-image {
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.product-info {
+  flex: 1;
+}
+.product-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #333;
+}
+.product-meta {
+  font-size: 10px;
+  color: #666;
+  margin-bottom: 2px;
+}
+.product-profit {
+  font-size: 11px;
+  font-weight: 600;
+  color: #11998e;
+}
+
+.empty-state {
+  text-align: center;
+  color: #999;
+  padding: 30px;
+  font-size: 12px;
+}
+
+.category-input-panel {
+  display: none;
+  margin-bottom: 10px;
+}
+.category-input-panel.show {
+  display: block;
+}
+
+.quick-cats {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.quick-cat-btn {
+  padding: 4px 10px;
+  background: #f0f4ff;
+  color: #667eea;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.quick-cat-btn:hover {
+  background: #667eea;
+  color: white;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🛒 长腿欧巴 V2</h1>
+  <p>智能选品助手 - 全自动化选品流程</p>
+</div>
+
+<!-- 选品模式 -->
+<div class="section">
+  <h2>📋 选品模式</h2>
+  <div class="mode-tabs" id="modeTabs">
+    <div class="mode-tab active" data-mode="hot">🔥 热销榜单</div>
+    <div class="mode-tab" data-mode="newest">🆕 最新上架</div>
+    <div class="mode-tab" data-mode="category">📂 按类目</div>
+    <div class="mode-tab" data-mode="random">🎲 完全随机</div>
+  </div>
+
+  <!-- 按类目面板 -->
+  <div class="category-input-panel" id="categoryPanel">
+    <div class="filter-item">
+      <label>类目 ID（多个用逗号分隔）</label>
+      <input type="text" id="categoryIds" placeholder="如: 10515,10502,31635">
+    </div>
+    <div class="quick-cats">
+      <button class="quick-cat-btn" data-id="10515">洗碗机</button>
+      <button class="quick-cat-btn" data-id="10502">冰箱</button>
+      <button class="quick-cat-btn" data-id="31635">双门冰箱</button>
+      <button class="quick-cat-btn" data-id="10500">家用电器</button>
+    </div>
+  </div>
+</div>
+
+<!-- 筛选条件 -->
+<div class="section">
+  <h2>🎯 筛选条件</h2>
+  <div class="filter-grid">
+    <div class="filter-item">
+      <label>最低价格（₽）</label>
+      <input type="number" id="filterPriceMin" placeholder="如: 1000">
+    </div>
+    <div class="filter-item">
+      <label>最高价格（₽）</label>
+      <input type="number" id="filterPriceMax" placeholder="如: 50000">
+    </div>
+    <div class="filter-item">
+      <label>最低月销量</label>
+      <input type="number" id="filterSalesMin" placeholder="如: 10">
+    </div>
+    <div class="filter-item">
+      <label>最低利润率（%）</label>
+      <input type="number" id="filterProfitRate" value="22" placeholder="默认: 22">
+    </div>
+  </div>
+  <div class="filter-item">
+    <label>
+      <input type="checkbox" id="filterFBS" checked>
+      仅 FBS 发货
+    </label>
+  </div>
+  <div class="filter-item">
+    <label>
+      <input type="checkbox" id="enable1688Match" checked>
+      自动匹配 1688 同款
+    </label>
+  </div>
+</div>
+
+<!-- 操作按钮 -->
+<div class="section">
+  <h2>🚀 操作</h2>
+  <button class="btn btn-hot" id="startPipeline">🎯 开始智能选品</button>
+  <button class="btn btn-secondary" id="exportExcel" disabled>📥 导出 Excel</button>
+  <button class="btn btn-secondary" id="exportHTML" disabled>📄 导出 HTML 报告</button>
+</div>
+
+<!-- 状态显示 -->
+<div id="status" class="status"></div>
+
+<!-- 进度条 -->
+<div class="progress-bar" id="progressBar">
+  <div class="progress-fill" id="progressFill"></div>
+</div>
+
+<!-- 结果展示 -->
+<div class="section">
+  <h2>📊 选品结果 <span id="resultCount" style="font-size: 11px; color: #999; font-weight: normal;"></span></h2>
+  <div class="results" id="results">
+    <div class="empty-state">
+      选择选品模式后点击"开始智能选品"
+    </div>
+  </div>
+</div>
+
+<!-- 引入脚本 -->
+<script src="config.js"></script>
+<script src="core/ozon-product-fetcher.js"></script>
+<script src="core/product-data-service.js"></script>
+<script src="core/match-1688-service.js"></script>
+<script src="core/main-controller.js"></script>
+<script src="popup-new.js"></script>
+
+</body>
+</html>

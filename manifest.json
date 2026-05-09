@@ -1,0 +1,141 @@
+{
+  "manifest_version": 3,
+  "name": "长腿欧巴 V2",
+  "description": "长腿欧巴 V2 - 智能选品助手：自动筛选FBS发货商品,提取双价格,应用公式筛选,一键上架,1688同款匹配",
+  "version": "2.0.0",
+  "default_locale": "zh_CN",
+  "icons": {
+    "16": "assets/logo.png",
+    "32": "assets/logo.png",
+    "48": "assets/logo.png",
+    "96": "assets/logo.png",
+    "128": "assets/logo.png"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "webRequest",
+    "cookies",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "*://*.ozon.ru/*",
+    "*://*.1688.com/*",
+    "*://*.maozierp.com/*",
+    "https://item.taobao.com/*",
+    "https://detail.tmall.com/*",
+    "https://chaoshi.detail.tmall.com/*",
+    "https://item.jd.com/*",
+    "https://aliexpress.ru/*",
+    "https://*.amazon.com/*",
+    "https://*.amazon.ae/*",
+    "https://*.amazon.ca/*",
+    "https://*.amazon.cn/*",
+    "https://*.amazon.co.jp/*",
+    "https://*.amazon.co.uk/*",
+    "https://*.amazon.au/*",
+    "https://*.amazon.br/*",
+    "https://*.amazon.mx/*",
+    "https://*.amazon.tr/*",
+    "https://*.amazon.de/*",
+    "https://*.amazon.fr/*",
+    "https://*.amazon.in/*",
+    "https://*.amazon.it/*",
+    "https://*.amazon.nl/*",
+    "https://*.amazon.sa/*",
+    "https://*.amazon.se/*",
+    "https://*.amazon.sg/*",
+    "https://www.wildberries.ru/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/logo.png",
+        "assets/logo-mz.png",
+        "assets/new.png",
+        "assets/favorite.png",
+        "assets/favorite-filled.png"
+      ],
+      "matches": ["<all_urls>"]
+    },
+    {
+      "resources": ["content-scripts/content.css", "content-scripts/hide-maozierp.css"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "长腿欧巴 - 智能选品助手",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.ozon.ru/*",
+        "*://*.1688.com/*",
+        "*://*.taobao.com/*",
+        "*://*.tmall.com/*",
+        "*://*.jd.com/*",
+        "*://*.aliexpress.ru/*",
+        "*://*.amazon.com/*",
+        "*://*.amazon.ae/*",
+        "*://*.amazon.ca/*",
+        "*://*.amazon.cn/*",
+        "*://*.amazon.co.jp/*",
+        "*://*.amazon.co.uk/*",
+        "*://*.amazon.au/*",
+        "*://*.amazon.br/*",
+        "*://*.amazon.mx/*",
+        "*://*.amazon.tr/*",
+        "*://*.amazon.de/*",
+        "*://*.amazon.fr/*",
+        "*://*.amazon.in/*",
+        "*://*.amazon.it/*",
+        "*://*.amazon.nl/*",
+        "*://*.amazon.sa/*",
+        "*://*.amazon.se/*",
+        "*://*.amazon.sg/*",
+        "*://*.wildberries.ru/*",
+        "*://*.maozierp.com/*"
+      ],
+      "css": ["content-scripts/hide-maozierp.css"],
+      "js": [
+        "config.js",
+        "core/ozon-product-fetcher.js",
+        "content-scripts/content.js",
+        "content-1688.js"
+      ]
+    },
+    {
+      "matches": ["*://*.ozon.ru/*"],
+      "exclude_matches": ["*://seller.ozon.ru/*"],
+      "js": [
+        "config.js",
+        "core/ozon-product-fetcher.js",
+        "content-scripts/smart-picker.js",
+        "content-scripts/category-scraper.js"
+      ]
+    },
+    {
+      "matches": ["*://seller.ozon.ru/*"],
+      "js": [
+        "config.js",
+        "core/ozon-product-fetcher.js",
+        "content-scripts/seller-bridge.js",
+        "content-scripts/category-tree.js"
+      ]
+    },
+    {
+      "matches": ["*://*.1688.com/*"],
+      "js": [
+        "config.js",
+        "core/ozon-product-fetcher.js",
+        "content-scripts/1688-matcher.js"
+      ]
+    }
+  ]
+}
