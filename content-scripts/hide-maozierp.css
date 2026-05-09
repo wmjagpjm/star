@@ -1,0 +1,9 @@
+/* Hide maozierp-ui sidebar — injected at page level via content_scripts css */
+maozierp-ui {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
