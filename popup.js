@@ -422,8 +422,12 @@ document.addEventListener('DOMContentLoaded', function() {
       const catExportLink = document.getElementById('catExportLink');
       if (catExportLink) catExportLink.style.display = 'inline';
       renderResults(extractedProducts);
-      // 补全价格/品牌/重量/配送等详情，同批量获取一样强制要求低价推荐
-      fetchRealTimePrices(null, true).then(() => {
+      // 补全价格/品牌/重量/尺寸/配送等详情
+      //   - 按用户选择的"抓取数量"为上限（#catMaxCount: 50/100/200/500）
+      //   - skipFilter=true：类目模式不强制要求有低价推荐才保留（类目页本就只卖某些价格区间）
+      const catMaxEl = document.getElementById('catMaxCount');
+      const catMax = catMaxEl ? Math.min(parseInt(catMaxEl.value, 10) || 100, extractedProducts.length) : extractedProducts.length;
+      fetchRealTimePrices(null, true, catMax).then(() => {
         const catExportLink2 = document.getElementById('catExportLink');
         if (catExportLink2) catExportLink2.style.display = 'inline';
       });
@@ -795,15 +799,20 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   // 获取实时价格的独立函数
-  async function fetchRealTimePrices(targetTabId = null, skipFilter = false) {
+  //   maxDetailFetch:
+  //     undefined → 默认 50（批量获取模式）
+  //     number    → 按类目等需要更多详情的场景，由调用方指定（上限 500 防止过慢 / 触发限流）
+  async function fetchRealTimePrices(targetTabId = null, skipFilter = false, maxDetailFetch = 50) {
     try {
-      const skus = extractedProducts.map(p => p.id).slice(0, 50);
+      // 限制：最多补全 500 条详情（Ozon 限流保护）
+      const detailLimit = Math.min(Math.max(1, maxDetailFetch | 0), 500);
+      const skus = extractedProducts.map(p => p.id).slice(0, detailLimit);
       // 查找任何 ozon.ru 页面（排除 seller）
       const ozonTabs = await chrome.tabs.query({ url: '*://*.ozon.ru/*' });
       const ozonTab = targetTabId ? ozonTabs.find(t => t.id === targetTabId) : ozonTabs.find(t => t.url && !t.url.includes('seller.ozon.ru'));
       
       if (ozonTab && ozonTab.id) {
-        showStatus(`正在获取 ${skus.length} 个商品的实时价格...`, 'loading');
+        showStatus(`正在获取 ${skus.length} 个商品的详细信息（价格/重量/尺寸）...`, 'loading');
           
           console.log('[Price Fetch] 开始获取价格，商品数量:', skus.length);
           console.log('[Price Fetch] 商品ID列表:', skus);
@@ -1044,7 +1053,7 @@ document.addEventListener('DOMContentLoaded', function() {
               seenPriceIds.add(product.id);
               validProducts.push(product);
             });
-            extractedProducts = validProducts.slice(0, 50); // 只保留50个
+            extractedProducts = validProducts.slice(0, detailLimit); // 批量模式默认 50，类目按用户指定
             exportResultsBtn.disabled = extractedProducts.length === 0;
             renderResults(extractedProducts);
             showStatus(`✅ 完成！${extractedProducts.length} 个有低价推荐的FBS商品（已过滤电脑/手机）`, 'success');
@@ -1089,6 +1098,8 @@ document.addEventListener('DOMContentLoaded', function() {
           ${item.soldSum && item.soldSum !== '-' ? '<div style="font-size:10px;color:#667eea;">月销额: ₽' + Number(item.soldSum).toLocaleString() + (item.soldCount && item.soldCount !== '-' ? ' | 销量: ' + Number(item.soldCount).toLocaleString() + '件' : '') + '</div>' : ''}
           ${item.brand && item.brand !== '-' ? '<div style="font-size:10px;color:#999;">品牌: ' + escapeHtml(item.brand) + '</div>' : ''}
           ${item.category && item.category !== '-' ? '<div style="font-size:10px;color:#999;">品类: ' + escapeHtml(item.category) + '</div>' : ''}
+          ${item.weight || item.dimensions ? '<div style="font-size:10px;color:#6b46c1;">' + (item.weight ? '⚖️ 重量: ' + escapeHtml(String(item.weight)) : '') + (item.weight && item.dimensions ? ' | ' : '') + (item.dimensions ? '📐 尺寸: ' + escapeHtml(String(item.dimensions)) : '') + '</div>' : ''}
+          ${item.delivery ? '<div style="font-size:10px;color:#0891b2;">🚚 ' + escapeHtml(String(item.delivery)) + '</div>' : ''}
           ${item.rating || item.comments ? '<div style="font-size:10px;color:#f39c12;">' + (item.rating ? '⭐ ' + escapeHtml(String(item.rating)) : '') + (item.comments ? ' | 💬 ' + escapeHtml(String(item.comments)) : '') + '</div>' : ''}
         </div>
       `).join('');
