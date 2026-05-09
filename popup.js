@@ -207,7 +207,9 @@ function initCategoryModule(callbacks) {
       const limitEl = document.getElementById('catMaxCount');
       const sortEl = document.getElementById('catSortBy');
       const maxItems = limitEl ? parseInt(limitEl.value) : 100;
-      const sortMode = sortEl ? sortEl.value : 'popular';
+      // sortMode 为空字符串 = 使用 Ozon 的默认排序，URL 上不加 ?sorting
+      // （某些类目对 ?sorting=popular 的渲染不稳定，空字段更可靠）
+      const sortMode = sortEl ? sortEl.value : '';
 
       // 进度条
       const progressBar = document.getElementById('catProgressBar');
@@ -234,7 +236,9 @@ function initCategoryModule(callbacks) {
 
         try {
           // 直接跳到 slug-id 终点 URL；纯 ID 情况下用 /-<id>/ 并在下面等待重定向稳定
-          const url = 'https://www.ozon.ru/category/' + entry.path + '/?sorting=' + sortMode;
+          // sortMode 为空时不加 ?sorting 参数，避免某些类目在带 sorting 时渲染异常
+          const qs = sortMode ? ('?sorting=' + encodeURIComponent(sortMode)) : '';
+          const url = 'https://www.ozon.ru/category/' + entry.path + '/' + qs;
 
           // 打开或复用已有 tab（必须激活标签页，否则滚动加载无法触发）
           let tab = null;
@@ -1284,6 +1288,36 @@ document.addEventListener('DOMContentLoaded', function() {
     // 自适应特征列：只导出实际有数据的维度
     const specCols = collectSpecColumns(products);
     const specHeaderCells = specCols.map(c => '<th>' + c.label + '</th>').join('');
+
+    // 数据完整度诊断：统计每个字段实际命中了多少条
+    // 帮助用户一眼看出某列空白到底是 API 限制 还是 数据没补全
+    function countFilled(field, pred) {
+      return products.filter(p => {
+        const v = p[field];
+        if (v === undefined || v === null || v === '' || v === '-') return false;
+        return pred ? pred(v) : true;
+      }).length;
+    }
+    const total = products.length;
+    const stats = {
+      '银行卡价': countFilled('cardPrice'),
+      '平台折扣价': countFilled('discountPrice'),
+      '低价推荐': countFilled('bestSellerPrice'),
+      '主图':     countFilled('mainImage'),
+      '品牌':     countFilled('brand'),
+      '发货模式':  products.filter(p => p.salesSchema && p.salesSchema !== '-').length,
+      '月销额':    countFilled('soldSum'),
+      '物流配送':  countFilled('delivery'),
+      '评分':     countFilled('rating'),
+      '评论数':    countFilled('comments'),
+    };
+    // 月销额/物流等字段在类目模式下可能本就没数据，给出友好的注释
+    function pct(n) { return total ? Math.round(n / total * 100) : 0; }
+    const statsHtml = Object.entries(stats).map(([k, n]) => {
+      const p = pct(n);
+      const color = p >= 80 ? '#2d8f4e' : p >= 30 ? '#e67e22' : '#c0392b';
+      return '<span style="color:' + color + ';margin-right:12px;">' + k + ': ' + n + '/' + total + ' (' + p + '%)</span>';
+    }).join('');
     const htmlContent = `
 <!DOCTYPE html>
 <html>
@@ -1319,6 +1353,10 @@ document.addEventListener('DOMContentLoaded', function() {
       <p>导出时间: ${new Date().toLocaleString('zh-CN')}</p>
       <p>商品数量: ${products.length}</p>
       <p>特征维度（自适应）: ${specCols.length ? specCols.map(c => c.label).join(' · ') : '无'}</p>
+      <p style="font-size:12px;line-height:1.8;padding:8px 10px;background:#f8f9fa;border-radius:6px;">
+        <b>📊 数据完整度：</b><br>${statsHtml}<br>
+        <span style="color:#888;font-size:11px;">💡 月销额 / 月销量 仅在"批量获取商品"模式下可用（类目搜索走前台 API，无此数据）；重量/尺寸/品牌/评分等依赖详情补全步骤，若大量为空请确认 ozon.ru 登录 tab 未关闭。</span>
+      </p>
     </div>
     <table>
       <thead>
