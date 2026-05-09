@@ -114,8 +114,48 @@ function safeEvalFormula(formula, variables) {
 }
 
 // ============================================================
-// 按类目模块初始化 - 支持直接使用 Ozon 前台 URL 类目ID
+// 按类目模块初始化 - 支持 3 种输入格式：
+//   ① 纯数字 ID:   10515
+//   ② slug-id:     posudomoechnye-mashiny-10515   (推荐，避免 Ozon 重定向)
+//   ③ 完整 URL:    https://www.ozon.ru/category/posudomoechnye-mashiny-10515/
 // ============================================================
+
+/**
+ * 解析用户输入的类目条目，返回 { id, slug, path } 或 null
+ *   id:   类目数字 ID（例 "10515"）
+ *   slug: 类目 URL slug 段（例 "posudomoechnye-mashiny-10515" 或 "-10515" 无 slug 时）
+ *   path: 用于拼 URL 的路径片段（等价于 slug，但保证有值）
+ */
+function parseCategoryEntry(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim().replace(/^[\s,，]+|[\s,，]+$/g, '');
+  if (!s) return null;
+
+  // 格式 ③：完整 URL
+  //   https://www.ozon.ru/category/posudomoechnye-mashiny-10515/?sorting=popular
+  //   → path = posudomoechnye-mashiny-10515
+  const urlMatch = s.match(/ozon\.ru\/category\/([^/?#]+)/i);
+  if (urlMatch) {
+    const seg = urlMatch[1];
+    const idMatch = seg.match(/-(\d+)$/) || seg.match(/^(\d+)$/);
+    if (idMatch) return { id: idMatch[1], slug: seg, path: seg };
+    return null;
+  }
+
+  // 格式 ②：slug-id，形如 posudomoechnye-mashiny-10515
+  const slugIdMatch = s.match(/^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i);
+  if (slugIdMatch) {
+    return { id: slugIdMatch[2], slug: s, path: s };
+  }
+
+  // 格式 ①：纯数字 ID
+  if (/^\d+$/.test(s)) {
+    // 用 /-<id>/ 形式，Ozon 会自动重定向；虽然绝对能解析，但新代码会等待重定向稳定
+    return { id: s, slug: '-' + s, path: '-' + s };
+  }
+
+  return null;
+}
 
 function initCategoryModule(callbacks) {
   // callbacks = { showStatus, renderResults }（由 DOMContentLoaded 注入）
@@ -126,18 +166,18 @@ function initCategoryModule(callbacks) {
 
   const categoryIdsInput = document.getElementById('categoryIds');
 
-  // 快选按钮
+  // 快选按钮（data-id 现在是 slug-id，例如 posudomoechnye-mashiny-10515）
   document.querySelectorAll('.cat-quick-btn').forEach(btn => {
     btn.addEventListener('click', function() {
       const id = this.dataset.id;
       const name = this.dataset.name;
       const existing = (categoryIdsInput.value || '').trim();
-      const ids = existing ? existing.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const ids = existing ? existing.split(/[,，]/).map(s => s.trim()).filter(Boolean) : [];
       if (!ids.includes(id)) {
         ids.push(id);
-        categoryIdsInput.value = ids.join(',');
+        categoryIdsInput.value = ids.join(', ');
       }
-      _showStatus('已选: ' + name + ' (ID: ' + id + ')', 'success');
+      _showStatus('已选: ' + name + ' (' + id + ')', 'success');
     });
   });
 
@@ -147,15 +187,20 @@ function initCategoryModule(callbacks) {
   const searchBtn = document.getElementById('ozonPublicSearchBtn');
   if (searchBtn) {
     searchBtn.addEventListener('click', async function() {
-      const rawIds = (categoryIdsInput ? categoryIdsInput.value : '').trim();
-      if (!rawIds) {
-        _showStatus('请输入类目 ID（如: 10515）', 'error');
+      const rawInput = (categoryIdsInput ? categoryIdsInput.value : '').trim();
+      if (!rawInput) {
+        _showStatus('请输入类目 ID / slug-id / URL', 'error');
         return;
       }
 
-      const ids = rawIds.split(/[,\s，]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
-      if (ids.length === 0) {
-        _showStatus('输入的 ID 格式不正确，请填写纯数字 ID', 'error');
+      // 按逗号分隔后逐项解析（支持 ID / slug-id / 完整 URL 混用）
+      const entries = rawInput
+        .split(/[,，\n]+/)
+        .map(s => parseCategoryEntry(s))
+        .filter(Boolean);
+
+      if (entries.length === 0) {
+        _showStatus('输入格式不正确。请填写纯数字 ID、slug-id（如 holodilniki-10502）或完整 URL', 'error');
         return;
       }
 
@@ -177,17 +222,19 @@ function initCategoryModule(callbacks) {
       searchBtn.disabled = true;
       searchBtn.textContent = '⏳ 正在抓取...';
       setProgress(5, '准备中...');
-      _showStatus('开始抓取 ' + ids.length + ' 个类目商品...', 'loading');
+      _showStatus('开始抓取 ' + entries.length + ' 个类目商品...', 'loading');
 
       let allProducts = [];
 
-      for (let i = 0; i < ids.length; i++) {
-        const catId = ids[i];
-        const pctBase = Math.round((i / ids.length) * 90);
-        setProgress(pctBase + 5, '正在打开类目 ' + catId + ' (' + (i + 1) + '/' + ids.length + ')...');
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const catId = entry.id;
+        const pctBase = Math.round((i / entries.length) * 90);
+        setProgress(pctBase + 5, '正在打开类目 ' + catId + ' (' + (i + 1) + '/' + entries.length + ')...');
 
         try {
-          const url = 'https://www.ozon.ru/category/-' + catId + '/?sorting=' + sortMode;
+          // 直接跳到 slug-id 终点 URL；纯 ID 情况下用 /-<id>/ 并在下面等待重定向稳定
+          const url = 'https://www.ozon.ru/category/' + entry.path + '/?sorting=' + sortMode;
 
           // 打开或复用已有 tab（必须激活标签页，否则滚动加载无法触发）
           let tab = null;
@@ -199,30 +246,22 @@ function initCategoryModule(callbacks) {
             tab = await chrome.tabs.create({ url: url, active: true });
           }
 
-          // 等待页面完成加载
-          await new Promise((resolve) => {
-            const onUpdated = (tabId, info) => {
-              if (tabId === tab.id && info.status === 'complete') {
-                chrome.tabs.onUpdated.removeListener(onUpdated);
-                resolve();
-              }
-            };
-            chrome.tabs.onUpdated.addListener(onUpdated);
-            // 超时保险：15秒
-            setTimeout(() => {
-              chrome.tabs.onUpdated.removeListener(onUpdated);
-              resolve();
-            }, 15000);
-          });
+          // 等待 tab URL 稳定（处理 Ozon 自动重定向），再等 status=complete
+          //   轮询 tab.url：连续 1s 不变即认为重定向结束
+          const finalUrl = await waitForTabUrlStable(tab.id, 15000, 1000);
+          console.log('[CategoryScraper] 类目', catId, '最终 URL:', finalUrl);
+
+          // 再等一次 complete（兜底）
+          await waitForTabComplete(tab.id, 5000);
 
           // 额外等待 JS 渲染
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 1500));
 
           setProgress(pctBase + 15, '正在抓取类目 ' + catId + ' 商品列表...');
 
           // 发消息给 content script
           const resp = await new Promise((resolve) => {
-            const tid = setTimeout(() => resolve({ success: false, error: 'content script 超时未响应' }), 30000);
+            const tid = setTimeout(() => resolve({ success: false, error: 'content script 超时未响应' }), 60000);
             chrome.tabs.sendMessage(tab.id, {
               type: 'SCRAPE_CATEGORY_PAGE',
               categoryId: catId,
@@ -265,6 +304,63 @@ function initCategoryModule(callbacks) {
       }
     });
   }
+}
+
+// 等待指定 tab 的 URL 稳定（连续 stableMs 毫秒不再变化），处理 Ozon 301/302 重定向链
+// 返回最终稳定的 URL。超时则返回当前 URL
+function waitForTabUrlStable(tabId, timeoutMs, stableMs) {
+  return new Promise((resolve) => {
+    const startTs = Date.now();
+    let lastUrl = '';
+    let lastChangeTs = Date.now();
+
+    const tick = async () => {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        const url = t && t.url ? t.url : '';
+        if (url !== lastUrl) {
+          lastUrl = url;
+          lastChangeTs = Date.now();
+        }
+        const stable = Date.now() - lastChangeTs >= stableMs;
+        const timedOut = Date.now() - startTs >= timeoutMs;
+        if ((stable && lastUrl) || timedOut) {
+          resolve(lastUrl);
+          return;
+        }
+      } catch (e) {
+        // tab 可能暂时不可访问，继续轮询
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+// 等待指定 tab 的 status=complete，超时也 resolve
+function waitForTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    const onUpdated = (id, info) => {
+      if (id === tabId && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        finish();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    // 立刻检查一次当前状态
+    chrome.tabs.get(tabId).then(t => {
+      if (t && t.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        finish();
+      }
+    }).catch(() => {});
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      finish();
+    }, timeoutMs);
+  });
 }
 
 // （保留空函数以防历史引用）
