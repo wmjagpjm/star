@@ -840,22 +840,83 @@ document.addEventListener('DOMContentLoaded', function() {
                 } catch(e) { return texts; }
               }
               
-              // 获取价格和标题
-              for (let i = 0; i < skuList.length; i += 5) {
-                const batch = skuList.slice(i, i + 5);
+              // 反爬早退控制（在注入脚本作用域内）
+              let blockedCount = 0;
+              let totalAttempts = 0;
+              let aborted = false;
+              let abortReason = '';
+
+              // 预检第一个 SKU：一旦被反爬拦截立即放弃，避免浪费几百个请求
+              if (skuList.length > 0) {
+                try {
+                  const probeSku = skuList[0];
+                  const probeUrl = `https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=/product/${probeSku}/&layout_container=pdpPage2column&layout_page_index=2`;
+                  console.log('[Price API] 预检:', probeUrl);
+                  const probeResp = await fetch(probeUrl, {
+                    headers: {
+                      'Accept': 'application/json',
+                      'x-o3-app-name': 'dweb_client',
+                      'x-o3-app-version': 'release_',
+                      'x-o3-language': 'ru',
+                      'x-requested-with': 'XMLHttpRequest',
+                    },
+                    credentials: 'include',
+                    referrer: `https://www.ozon.ru/product/${probeSku}/`,
+                    referrerPolicy: 'strict-origin-when-cross-origin'
+                  });
+                  if (!probeResp.ok) {
+                    return { aborted: true, reason: `HTTP ${probeResp.status}`, stage: 'probe', resultMap: {} };
+                  }
+                  const probeText = await probeResp.text();
+                  if (probeText.trim().startsWith('<')) {
+                    return { aborted: true, reason: 'HTML challenge（反爬拦截）', stage: 'probe', resultMap: {} };
+                  }
+                  console.log('[Price API] 预检通过，开始批量抓取');
+                } catch(e) {
+                  return { aborted: true, reason: e.message || String(e), stage: 'probe', resultMap: {} };
+                }
+              }
+
+              // 获取价格和标题（降并发 5→2 + 间隔 300ms→1500ms，减少触发反爬）
+              for (let i = 0; i < skuList.length; i += 2) {
+                if (aborted) break;
+                const batch = skuList.slice(i, i + 2);
                 const promises = batch.map(async (sku) => {
+                  if (aborted) return;
                   try {
-                    const url = `https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=/product/${sku}`;
+                    const url = `https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=/product/${sku}/&layout_container=pdpPage2column&layout_page_index=2`;
                     console.log('[Price API] 请求:', url);
-                    const resp = await fetch(url, { 
-                      headers: { 'Accept': 'application/json' }, 
-                      credentials: 'include' 
+                    const resp = await fetch(url, {
+                      headers: {
+                        'Accept': 'application/json',
+                        'x-o3-app-name': 'dweb_client',
+                        'x-o3-app-version': 'release_',
+                        'x-o3-language': 'ru',
+                        'x-requested-with': 'XMLHttpRequest',
+                      },
+                      credentials: 'include',
+                      referrer: `https://www.ozon.ru/product/${sku}/`,
+                      referrerPolicy: 'strict-origin-when-cross-origin'
                     });
+                    totalAttempts++;
                     if (!resp.ok) {
+                      blockedCount++;
                       console.warn('[Price API] 请求失败:', sku, resp.status);
                       return;
                     }
-                    const data = await resp.json();
+                    const rawText = await resp.text();
+                    if (rawText.trim().startsWith('<')) {
+                      blockedCount++;
+                      console.warn('[Price API] HTML 响应（反爬）:', sku);
+                      return;
+                    }
+                    let data;
+                    try {
+                      data = JSON.parse(rawText);
+                    } catch(e) {
+                      console.error('[Price API] JSON 解析失败:', sku, e);
+                      return;
+                    }
                     const states = data.widgetStates || {};
                     const info = {};
                     for (const [key, val] of Object.entries(states)) {
@@ -1014,7 +1075,14 @@ document.addEventListener('DOMContentLoaded', function() {
                   }
                 });
                 await Promise.all(promises);
-                if (i + 5 < skuList.length) await new Promise(r => setTimeout(r, 300));
+                // 累计失败率 30%+ 立即停止（早退，不浪费后续请求）
+                if (totalAttempts >= 5 && blockedCount / totalAttempts >= 0.3) {
+                  aborted = true;
+                  abortReason = `失败率 ${Math.round(blockedCount / totalAttempts * 100)}%（${blockedCount}/${totalAttempts}）`;
+                  console.warn('[Price API] 早退:', abortReason);
+                  break;
+                }
+                if (i + 2 < skuList.length) await new Promise(r => setTimeout(r, 1500));
               }
               
               // 批量翻译所有标题为中文（每次20个一组）
@@ -1032,22 +1100,36 @@ document.addEventListener('DOMContentLoaded', function() {
               
               console.log('[Price API] 完成，成功获取', Object.keys(resultMap).length, '个商品信息');
               console.log('[Price API] 结果:', resultMap);
-              return resultMap;
+              return { aborted, reason: abortReason, stage: aborted ? 'batch' : 'done', resultMap };
             },
             args: [skus]
           });
           
-          console.log('[Price Fetch] 脚本执行结果:', results);
-          console.log('[Price Fetch] results 类型:', typeof results);
-          console.log('[Price Fetch] results 是否为数组:', Array.isArray(results));
-          console.log('[Price Fetch] results.length:', results ? results.length : 'undefined');
-          console.log('[Price Fetch] results[0]:', results && results[0]);
-          console.log('[Price Fetch] results[0].result:', results && results[0] && results[0].result);
-          
-          const priceData = results && results[0] && results[0].result;
+          const scriptResult = results && results[0] && results[0].result;
+          console.log('[Price Fetch] 脚本返回:', scriptResult);
+
+          // 兼容旧结构：如果直接是 map（无 resultMap 字段），也能继续跑
+          const isWrapped = scriptResult && typeof scriptResult === 'object' && 'resultMap' in scriptResult;
+          const priceData = isWrapped ? scriptResult.resultMap : scriptResult;
+          const aborted = isWrapped ? !!scriptResult.aborted : false;
+          const abortStage = isWrapped ? (scriptResult.stage || '') : '';
+          const abortReason = isWrapped ? (scriptResult.reason || '') : '';
+
           console.log('[Price Fetch] 价格数据:', priceData);
-          console.log('[Price Fetch] 价格数据类型:', typeof priceData);
           console.log('[Price Fetch] 数据条数:', priceData ? Object.keys(priceData).length : 0);
+
+          // 反爬拦截：预检阶段就失败 → 友好提示并保留列表页抓到的基础信息
+          if (aborted && abortStage === 'probe') {
+            showStatus(
+              '⚠️ Ozon 反爬已拦截详情 API（' + abortReason + '）。' +
+              '请先在浏览器里手动访问几个商品页通过人机校验，再重试。' +
+              '本次已保留列表页抓到的 价格/标题/评分/评论/主图。',
+              'error'
+            );
+            renderResults(extractedProducts);
+            exportResultsBtn.disabled = extractedProducts.length === 0;
+            return;
+          }
           
           if (priceData && Object.keys(priceData).length > 0) {
             // 过滤已下架和无价格商品，去除重复
@@ -1095,7 +1177,16 @@ document.addEventListener('DOMContentLoaded', function() {
             extractedProducts = validProducts.slice(0, detailLimit); // 批量模式默认 50，类目按用户指定
             exportResultsBtn.disabled = extractedProducts.length === 0;
             renderResults(extractedProducts);
-            showStatus(`✅ 完成！${extractedProducts.length} 个有低价推荐的FBS商品（已过滤电脑/手机）`, 'success');
+            if (aborted && abortStage === 'batch') {
+              showStatus(
+                `⚠️ 抓到一部分就被 Ozon 反爬拦了（${abortReason}）。` +
+                `已停止后续请求，${extractedProducts.length} 个商品的详情补全成功。` +
+                `如需更多，请在浏览器里手动访问商品页过人机校验再重试。`,
+                'error'
+              );
+            } else {
+              showStatus(`✅ 完成！${extractedProducts.length} 个有低价推荐的FBS商品（已过滤电脑/手机）`, 'success');
+            }
           } else {
             showStatus(`✅ ${extractedProducts.length} 个商品（价格接口未返回数据）`, 'success');
           }
