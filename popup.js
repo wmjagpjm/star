@@ -801,347 +801,312 @@ document.addEventListener('DOMContentLoaded', function() {
     bulkFetchBtn.disabled = false;
     checkSellerTab();
   });
-  // ============================================================
-  // 获取实时价格 —— DOM 抓取方案（方案 A）
-  //
-  //   背景：Ozon 详情 API (entrypoint-api.bx/page/json/v2) 被反爬拦截，
-  //         长期返回 403 HTML challenge。但浏览器正常渲染页面时
-  //         所有数据都在 DOM 里（widgets: webPrice/webProductHeading/
-  //         webGallery/webShortCharacteristics/webSingleProductScore 等）。
-  //
-  //   方案：为每个 SKU 在一个专用详情 tab 里依次导航到商品页，
-  //         等 Vue 渲染完成后读取 DOM，提取字段。
-  //
-  //   参数:
-  //     targetTabId:    批量模式下的 ozon tab id（此处已忽略，改用专用 tab）
-  //     skipFilter:     true = 类目模式（不强制任何字段）；false = 批量模式
-  //     maxDetailFetch: 最多补全条数
-  //                     类目模式调用方传入（50/100/200/500）
-  //                     批量模式默认 30（DOM 方案较慢，~3 秒/条）
-  //                     上限 200（再多用户会失去耐心）
-  //
-  //   性能：每条约 2.5-3.5 秒（导航+渲染+读 DOM）
-  //         30 条 ~ 1.5 分钟，100 条 ~ 5 分钟
-  //
-  //   熔断：连续 5 条抓取为空 → 停止后续，避免无谓等待
-  // ============================================================
-  async function fetchRealTimePrices(targetTabId = null, skipFilter = false, maxDetailFetch = 30) {
+  
+  // 获取实时价格的独立函数
+  //   maxDetailFetch:
+  //     undefined → 默认 50（批量获取模式）
+  //     number    → 按类目等需要更多详情的场景，由调用方指定（上限 500 防止过慢 / 触发限流）
+  async function fetchRealTimePrices(targetTabId = null, skipFilter = false, maxDetailFetch = 50) {
     try {
-      // 限制：DOM 方案默认 30 条，上限 200（避免用户等 10 分钟）
-      const detailLimit = Math.min(Math.max(1, maxDetailFetch | 0), 200);
+      // 限制：最多补全 500 条详情（Ozon 限流保护）
+      const detailLimit = Math.min(Math.max(1, maxDetailFetch | 0), 500);
       const skus = extractedProducts.map(p => p.id).slice(0, detailLimit);
-      if (skus.length === 0) {
-        showStatus('❌ 没有可补全的商品', 'error');
-        return;
-      }
-
-      // 创建（或复用）专用详情 tab —— 固定、后台、不打扰用户
-      //   复用策略：如果已有 pinned 的 ozon.ru 非 seller tab 且 URL 是 /product/* → 复用
-      //   否则新建
-      let detailTab = null;
-      try {
-        const existing = await chrome.tabs.query({ url: '*://www.ozon.ru/product/*', pinned: true });
-        if (existing && existing.length > 0) {
-          detailTab = existing[0];
-          console.log('[DOM Scraper] 复用已有详情 tab:', detailTab.id);
-        } else {
-          detailTab = await chrome.tabs.create({
-            url: `https://www.ozon.ru/product/${skus[0]}/`,
-            active: false,
-            pinned: true
+      // 查找任何 ozon.ru 页面（排除 seller）
+      const ozonTabs = await chrome.tabs.query({ url: '*://*.ozon.ru/*' });
+      const ozonTab = targetTabId ? ozonTabs.find(t => t.id === targetTabId) : ozonTabs.find(t => t.url && !t.url.includes('seller.ozon.ru'));
+      
+      if (ozonTab && ozonTab.id) {
+        showStatus(`正在获取 ${skus.length} 个商品的详细信息（价格/重量/尺寸）...`, 'loading');
+          
+          console.log('[Price Fetch] 开始获取价格，商品数量:', skus.length);
+          console.log('[Price Fetch] 商品ID列表:', skus);
+          
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: ozonTab.id },
+            func: async (skuList) => {
+              console.log('[Price API] 开始处理', skuList.length, '个商品');
+              const resultMap = {};
+              
+              // 批量翻译函数
+              async function translateToZh(texts) {
+                try {
+                  const q = texts.join('\n');
+                  const resp = await fetch(
+                    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${encodeURIComponent(q)}`
+                  );
+                  const data = await resp.json();
+                  const translated = data[0].map(s => s[0]).join('');
+                  return translated.split('\n');
+                } catch(e) { return texts; }
+              }
+              
+              // 获取价格和标题
+              for (let i = 0; i < skuList.length; i += 5) {
+                const batch = skuList.slice(i, i + 5);
+                const promises = batch.map(async (sku) => {
+                  try {
+                    const url = `https://www.ozon.ru/api/entrypoint-api.bx/page/json/v2?url=/product/${sku}`;
+                    console.log('[Price API] 请求:', url);
+                    const resp = await fetch(url, { 
+                      headers: { 'Accept': 'application/json' }, 
+                      credentials: 'include' 
+                    });
+                    if (!resp.ok) {
+                      console.warn('[Price API] 请求失败:', sku, resp.status);
+                      return;
+                    }
+                    const data = await resp.json();
+                    const states = data.widgetStates || {};
+                    const info = {};
+                    for (const [key, val] of Object.entries(states)) {
+                      // 提取价格（改进：尝试所有 webPrice widget，提取更多字段）
+                      if (key.startsWith('webPrice-') && !key.includes('Stars')) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          // 提取银行卡价格
+                          if (!info.cardPrice && obj.cardPrice) {
+                            info.cardPrice = obj.cardPrice;
+                          }
+                          // 提取平台折扣价
+                          if (!info.price && obj.price) {
+                            info.price = obj.price;
+                          }
+                          // 备选：从 originalPrice 提取
+                          if (!info.price && obj.originalPrice) {
+                            info.price = obj.originalPrice;
+                          }
+                          // 备选：从 currentPrice 提取
+                          if (!info.price && obj.currentPrice) {
+                            info.price = obj.currentPrice;
+                          }
+                          // 调试日志
+                          console.log('[Price API] webPrice widget:', key, obj);
+                        } catch(e) {
+                          console.error('[Price API] 解析 webPrice 失败:', key, e);
+                        }
+                      }
+                      // 提取低价推荐（改进：添加更多提取路径和调试日志）
+                      if (key.startsWith('webBestSeller-') && !info.bestSellerPrice) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          console.log('[Price API] webBestSeller widget:', key, obj);
+                          
+                          // 方法1：从 textRs 数组中提取
+                          const priceItem = (obj.textRs || []).find(t => t.type === 'textMediumBold');
+                          if (priceItem && priceItem.content) {
+                            info.bestSellerPrice = priceItem.content;
+                          }
+                          
+                          // 方法2：从 price 字段提取
+                          if (!info.bestSellerPrice && obj.price) {
+                            info.bestSellerPrice = obj.price;
+                          }
+                          
+                          // 方法3：从 text 字段提取
+                          if (!info.bestSellerPrice && obj.text) {
+                            info.bestSellerPrice = obj.text;
+                          }
+                          
+                          // 方法4：从 title 字段提取（可能包含价格）
+                          if (!info.bestSellerPrice && obj.title) {
+                            const priceMatch = obj.title.match(/([\d\s,]+[,.]\d+\s*₽)/);
+                            if (priceMatch) info.bestSellerPrice = priceMatch[1];
+                          }
+                        } catch(e) {
+                          console.error('[Price API] 解析 webBestSeller 失败:', key, e);
+                        }
+                      }
+                      // 提取标题 + 品牌
+                      if (key.startsWith('webProductHeading') && !info.title) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          info.title = obj.title || '';
+                          if (!info.brand && obj.brand) info.brand = obj.brand;
+                        } catch(e) {}
+                      }
+                      // 品牌备选：webBrand widget
+                      if (key.startsWith('webBrand') && !info.brand) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          info.brand = obj.name || obj.brand || obj.title || '';
+                        } catch(e) {}
+                      }
+                      // 提取主图
+                      if (key.startsWith('webGallery') && !info.mainImage) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          const covers = obj.coverImage || obj.images || obj.covers || [];
+                          if (Array.isArray(covers) && covers.length > 0) {
+                            info.mainImage = covers[0].src || covers[0].url || covers[0];
+                          } else if (obj.coverImage && typeof obj.coverImage === 'string') {
+                            info.mainImage = obj.coverImage;
+                          }
+                        } catch(e) {}
+                      }
+                      // 提取商品规格 —— 按类目自适应抓取所有特征维度
+                      //   1. info.specs: 保留全部原始 key→value，类目无关
+                      //   2. 按规则归一化到命名字段（weight / size / color / material / ...）
+                      //   3. 每个命名字段只接受第一次命中的值；规则按优先级排序（更具体的正则在前）
+                      if (key.startsWith('webShortCharacteristics') || key.startsWith('webCharacteristics')) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          const chars = obj.characteristics || obj.shortCharacteristics || [];
+                          info.specs = info.specs || {};
+                          // 规则顺序很关键：先匹配更具体的（"размер упаковки" → dimensions），
+                          // 否则会被通用的 "размер" → size 抢先吃掉
+                          const SPEC_RULES = [
+                            ['weight',     /(^|\b)(вес|масса|weight|net\s*weight|重量|净重|毛重)(\b|$)/i],
+                            ['dimensions', /(габарит|размер\s*упаковки|размеры\s*товара|dimension|尺寸|规格|外形)/i],
+                            ['volume',     /(^|\b)(объ[её]м|capacity|volume|容量|净含量|容积)(\b|$)/i],
+                            ['power',      /(^|\b)(мощность|wattage|power|功率)(\b|$)/i],
+                            ['material',   /(^|\b)(материал|состав|material|composition|fabric|面料|材质|成分)(\b|$)/i],
+                            ['color',      /(^|\b)(цвет|colou?r|颜色|色彩|色调)(\b|$)/i],
+                            ['size',       /(^|\b)(размер|size|尺码|码数|鞋码|服装尺码)(\b|$)/i],
+                            ['shelfLife',  /(срок\s*годности|срок\s*хранения|shelf\s*life|expir|保质期|保存期)/i],
+                            ['origin',     /(страна[\s-]*производ|country\s*of\s*origin|производство|made\s*in|产地|原产国)/i],
+                            ['season',     /(^|\b)(сезон|season|季节|季)(\b|$)/i],
+                            ['ageGroup',   /(возраст|age\s*group|适用年龄|年龄段)/i],
+                            ['brandOrig',  /(бренд|brand|торговая\s*марка|品牌)/i], // 备用，常已从 webBrand 拿到
+                            ['model',      /(^|\b)(модель|model|型号)(\b|$)/i],
+                          ];
+                          for (const group of chars) {
+                            const items = group.short || group.characteristics || [];
+                            for (const ch of items) {
+                              const rawKey = String(ch.key || ch.name || '').trim();
+                              if (!rawKey) continue;
+                              const v = ch.value || (ch.values && ch.values[0] && ch.values[0].text) || '';
+                              if (!v) continue;
+                              // 1) 全量保留
+                              if (!info.specs[rawKey]) info.specs[rawKey] = String(v);
+                              // 2) 归一化
+                              const keyLower = rawKey.toLowerCase();
+                              for (const [field, re] of SPEC_RULES) {
+                                if (!info[field] && re.test(keyLower)) {
+                                  info[field] = String(v);
+                                  break;
+                                }
+                              }
+                            }
+                          }
+                        } catch(e) { console.warn('[Price API] 解析规格失败:', key, e); }
+                      }
+                      // 提取配送方式
+                      if (key.startsWith('webDelivery') && !info.delivery) {
+                        try {
+                          const obj = typeof val === 'string' ? JSON.parse(val) : val;
+                          const parts = [];
+                          if (obj.deliveryText) parts.push(obj.deliveryText);
+                          if (obj.courierText) parts.push(obj.courierText);
+                          if (obj.pickupText) parts.push(obj.pickupText);
+                          if (obj.title) parts.push(obj.title);
+                          if (parts.length) info.delivery = parts.join(' | ');
+                        } catch(e) {}
+                      }
+                    }
+                    if (info.cardPrice || info.price || info.title || info.mainImage) {
+                      console.log('[Price API] 成功获取商品信息:', sku, info);
+                      resultMap[sku] = info;
+                    } else {
+                      console.warn('[Price API] 商品信息不完整:', sku, info);
+                    }
+                  } catch(e) {
+                    console.error('[Price API] 处理商品出错:', sku, e);
+                  }
+                });
+                await Promise.all(promises);
+                if (i + 5 < skuList.length) await new Promise(r => setTimeout(r, 300));
+              }
+              
+              // 批量翻译所有标题为中文（每次20个一组）
+              const skusWithTitle = Object.entries(resultMap).filter(([k, v]) => v.title);
+              for (let i = 0; i < skusWithTitle.length; i += 20) {
+                const batch = skusWithTitle.slice(i, i + 20);
+                const titles = batch.map(([k, v]) => v.title);
+                try {
+                  const zhTitles = await translateToZh(titles);
+                  batch.forEach(([sku], idx) => {
+                    if (zhTitles[idx]) resultMap[sku].titleZh = zhTitles[idx];
+                  });
+                } catch(e) {}
+              }
+              
+              console.log('[Price API] 完成，成功获取', Object.keys(resultMap).length, '个商品信息');
+              console.log('[Price API] 结果:', resultMap);
+              return resultMap;
+            },
+            args: [skus]
           });
-          console.log('[DOM Scraper] 新建详情 tab:', detailTab.id);
-          // 新 tab 首次打开需要额外时间通过反爬 + 渲染
-          await waitForTabComplete(detailTab.id, 30000);
-          await new Promise(r => setTimeout(r, 2000));
-        }
-      } catch(e) {
-        showStatus('❌ 无法创建详情 tab: ' + e.message, 'error');
-        return;
-      }
-
-      showStatus(`正在逐个抓取 ${skus.length} 个商品的详情（DOM 方案，约 ${Math.ceil(skus.length * 3 / 60)} 分钟）...`, 'loading');
-
-      const resultMap = {};
-      let consecutiveEmpty = 0;
-      let stoppedEarly = false;
-
-      for (let i = 0; i < skus.length; i++) {
-        const sku = skus[i];
-        showStatus(`正在抓取 ${i + 1}/${skus.length}：SKU ${sku}（已成功 ${Object.keys(resultMap).length}）...`, 'loading');
-        console.log(`[DOM Scraper] [${i + 1}/${skus.length}] 导航到 SKU ${sku}`);
-
-        try {
-          // 1. 导航到商品页
-          await chrome.tabs.update(detailTab.id, { url: `https://www.ozon.ru/product/${sku}/`, active: false });
-          // 2. 等页面 URL 稳定（Ozon 会重定向到 slug-id）
-          await waitForTabUrlStable(detailTab.id, 12000, 800);
-          // 3. 再等 status=complete
-          await waitForTabComplete(detailTab.id, 10000);
-          // 4. 等 Vue widgets 挂载（关键）
-          await new Promise(r => setTimeout(r, 1800));
-
-          // 5. 注入脚本读 DOM
-          const scriptResults = await chrome.scripting.executeScript({
-            target: { tabId: detailTab.id },
-            func: scrapeProductDom,
-            args: []
-          });
-
-          const info = scriptResults && scriptResults[0] && scriptResults[0].result;
-          console.log(`[DOM Scraper] SKU ${sku} 抓取结果:`, info);
-
-          if (info && (info.cardPrice || info.discountPrice || info.title)) {
-            resultMap[sku] = info;
-            consecutiveEmpty = 0;
+          
+          console.log('[Price Fetch] 脚本执行结果:', results);
+          console.log('[Price Fetch] results 类型:', typeof results);
+          console.log('[Price Fetch] results 是否为数组:', Array.isArray(results));
+          console.log('[Price Fetch] results.length:', results ? results.length : 'undefined');
+          console.log('[Price Fetch] results[0]:', results && results[0]);
+          console.log('[Price Fetch] results[0].result:', results && results[0] && results[0].result);
+          
+          const priceData = results && results[0] && results[0].result;
+          console.log('[Price Fetch] 价格数据:', priceData);
+          console.log('[Price Fetch] 价格数据类型:', typeof priceData);
+          console.log('[Price Fetch] 数据条数:', priceData ? Object.keys(priceData).length : 0);
+          
+          if (priceData && Object.keys(priceData).length > 0) {
+            // 过滤已下架和无价格商品，去除重复
+            const validProducts = [];
+            const seenPriceIds = new Set();
+            extractedProducts.forEach(product => {
+              const info = priceData[product.id];
+              if (info) {
+                product.cardPrice = info.cardPrice || '';
+                product.discountPrice = info.price || '';
+                product.bestSellerPrice = info.bestSellerPrice || '';
+                if (info.titleZh) product.title = info.titleZh;
+                if (info.mainImage) product.mainImage = info.mainImage;
+                // 归一化规格字段（只有在 info 里命中才覆盖，保留原值）
+                const SPEC_FIELDS = ['weight','dimensions','volume','power','material','color','size','shelfLife','origin','season','ageGroup','model'];
+                for (const f of SPEC_FIELDS) {
+                  if (info[f]) product[f] = info[f];
+                }
+                if (info.specs && Object.keys(info.specs).length) product.specs = info.specs;
+                if (info.delivery) {
+                  product.delivery = info.delivery;
+                  product.isFBS = /FBS|Ozon\s*доставка|Продавец\s*хранит/i.test(info.delivery);
+                  product.salesSchema = product.isFBS ? 'FBS' : 'FBO';
+                }
+                if (info.brand) product.brand = info.brand;
+              }
+              // 过滤：skipFilter=true 时（类目模式）只去重，不强制要求低价推荐
+              if (!skipFilter && !product.bestSellerPrice) return; // 批量模式必须有低价推荐
+              const hasPrice = product.cardPrice || product.discountPrice || product.bestSellerPrice;
+              if (!hasPrice) return;
+              if (seenPriceIds.has(product.id)) return;
+              
+              // 排除电脑和手机类商品
+              const title = (product.title || '').toLowerCase();
+              const category = (product.category || '').toLowerCase();
+              const excludeKeywords = ['电脑', '笔记本', '台式机', 'laptop', 'computer', 'pc', '手机', 'phone', 'iphone', 'smartphone', '平板', 'tablet', 'ipad'];
+              const shouldExclude = excludeKeywords.some(keyword => 
+                title.includes(keyword) || category.includes(keyword)
+              );
+              if (shouldExclude) return;
+              
+              seenPriceIds.add(product.id);
+              validProducts.push(product);
+            });
+            extractedProducts = validProducts.slice(0, detailLimit); // 批量模式默认 50，类目按用户指定
+            exportResultsBtn.disabled = extractedProducts.length === 0;
+            renderResults(extractedProducts);
+            showStatus(`✅ 完成！${extractedProducts.length} 个有低价推荐的FBS商品（已过滤电脑/手机）`, 'success');
           } else {
-            consecutiveEmpty++;
-            console.warn(`[DOM Scraper] SKU ${sku} 抓取为空（连续 ${consecutiveEmpty} 次）`);
+            showStatus(`✅ ${extractedProducts.length} 个商品（价格接口未返回数据）`, 'success');
           }
-        } catch(e) {
-          consecutiveEmpty++;
-          console.error(`[DOM Scraper] SKU ${sku} 异常:`, e);
+        } else {
+          showStatus(`✅ ${extractedProducts.length} 个商品（请打开 ozon.ru 任意页面以获取实时价格）`, 'success');
         }
-
-        // 熔断：连续 5 个都拿不到数据，停下
-        if (consecutiveEmpty >= 5) {
-          stoppedEarly = true;
-          console.error('[DOM Scraper] 连续 5 次抓取失败，停止后续');
-          break;
-        }
-
-        // SKU 间歇 —— 避免过度刷新打扰 Ozon
-        if (i < skus.length - 1) {
-          await new Promise(r => setTimeout(r, 600));
-        }
-      }
-
-      const successCount = Object.keys(resultMap).length;
-      console.log(`[DOM Scraper] 全部完成，成功 ${successCount}/${skus.length}`);
-
-      // 6. 批量翻译标题（可选，失败不影响主流程）
-      try {
-        const titleEntries = Object.entries(resultMap).filter(([, v]) => v && v.title);
-        for (let i = 0; i < titleEntries.length; i += 20) {
-          const batch = titleEntries.slice(i, i + 20);
-          const texts = batch.map(([, v]) => v.title);
-          const q = texts.join('\n');
-          const resp = await fetch(
-            `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${encodeURIComponent(q)}`
-          );
-          if (resp.ok) {
-            const data = await resp.json();
-            const zh = data[0].map(s => s[0]).join('').split('\n');
-            batch.forEach(([sku], idx) => { if (zh[idx]) resultMap[sku].titleZh = zh[idx]; });
-          }
-        }
-      } catch(e) { console.warn('[DOM Scraper] 翻译失败（非致命）:', e); }
-
-      // 7. 合并到 extractedProducts —— 关键原则：API/DOM 有值才覆盖，否则保留列表页原值
-      const validProducts = [];
-      const seenPriceIds = new Set();
-      extractedProducts.forEach(product => {
-        const info = resultMap[product.id];
-        if (info) {
-          // 价格：有值才覆盖，保留列表页抓到的
-          if (info.cardPrice)        product.cardPrice       = info.cardPrice;
-          if (info.discountPrice)    product.discountPrice   = info.discountPrice;
-          if (info.bestSellerPrice)  product.bestSellerPrice = info.bestSellerPrice;
-          if (info.titleZh)          product.title           = info.titleZh;
-          else if (info.title)       product.title           = info.title;
-          if (info.mainImage)        product.mainImage       = info.mainImage;
-          if (info.brand)            product.brand           = info.brand;
-          if (info.rating)           product.rating          = info.rating;
-          if (info.comments)         product.comments        = info.comments;
-
-          // 规格字段：有值才覆盖
-          const SPEC_FIELDS = ['weight','dimensions','volume','power','material','color','size','shelfLife','origin','season','ageGroup','model'];
-          for (const f of SPEC_FIELDS) {
-            if (info[f]) product[f] = info[f];
-          }
-          if (info.specs && Object.keys(info.specs).length) product.specs = info.specs;
-        }
-
-        // 过滤：只要有任一价格字段就保留（列表页抓到的 cardPrice 足够）
-        // 关键修正：不再强制要求 bestSellerPrice（DOM 方案里通常没有），
-        //         也不擦掉列表页原有的价格字段
-        const hasPrice = product.cardPrice || product.discountPrice || product.bestSellerPrice;
-        if (!hasPrice) return;
-        if (seenPriceIds.has(product.id)) return;
-
-        // 排除电脑/手机类（保留老逻辑）
-        const title = (product.title || '').toLowerCase();
-        const category = (product.category || '').toLowerCase();
-        const excludeKeywords = ['电脑', '笔记本', '台式机', 'laptop', 'computer', 'pc', '手机', 'phone', 'iphone', 'smartphone', '平板', 'tablet', 'ipad'];
-        if (excludeKeywords.some(k => title.includes(k) || category.includes(k))) return;
-
-        seenPriceIds.add(product.id);
-        validProducts.push(product);
-      });
-
-      extractedProducts = validProducts;
-      exportResultsBtn.disabled = extractedProducts.length === 0;
-      renderResults(extractedProducts);
-
-      // 8. 状态提示
-      if (stoppedEarly) {
-        showStatus(
-          `⚠️ 连续 5 次抓取为空（可能反爬）。已停止，成功 ${successCount} 个，` +
-          `保留 ${extractedProducts.length} 条（列表页价格仍可用）。建议稍后重试。`,
-          'error'
-        );
-      } else if (successCount === 0) {
-        showStatus(
-          `⚠️ DOM 抓取全部失败（反爬或 tab 异常）。保留 ${extractedProducts.length} 条列表页数据。` +
-          `请在浏览器中手动访问 ozon.ru 商品页通过人机校验后重试。`,
-          'error'
-        );
-      } else {
-        showStatus(
-          `✅ DOM 抓取完成 ${successCount}/${skus.length}，保留 ${extractedProducts.length} 条（已过滤电脑/手机）`,
-          'success'
-        );
-      }
     } catch (error) {
-      console.error('[DOM Scraper] 主流程异常:', error);
       showStatus('❌ 错误: ' + error.message, 'error');
     }
   }
-
-  // ============================================================
-  // 在商品页 DOM 里抓取字段 —— 此函数会被 executeScript 注入到页面
-  //   必须是 pure function（不依赖外部作用域），返回纯数据
-  //   基于 2026-05 实测的 Ozon DOM 结构（详见浏览器 agent 诊断）
-  // ============================================================
-  function scrapeProductDom() {
-    const out = {};
-    const log = (...a) => console.log('[DOM Scraper:page]', ...a);
-
-    // 检测反爬页面（challenge 页没有 h1）
-    if (!document.querySelector('h1') && (document.body.innerText || '').includes('Доступ')) {
-      log('页面是反爬 challenge');
-      return { blocked: true };
-    }
-
-    // ---------- 标题（h1）----------
-    try {
-      const h1 = document.querySelector('[data-widget="webProductHeading"] h1') || document.querySelector('h1');
-      if (h1) out.title = h1.innerText.trim().replace(/\s+/g, ' ');
-    } catch(e) {}
-
-    // ---------- 品牌（从 h1 首单词抠，webBrand widget 只有"原装"徽章没品牌名）----------
-    try {
-      if (out.title) {
-        // h1 的第一个"词"（多数商品 h1 首词就是品牌，e.g. "Weissgauff Холодильник ..."）
-        const m = out.title.match(/^([A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-&'.]{1,30})\s/);
-        if (m) out.brand = m[1];
-      }
-    } catch(e) {}
-
-    // ---------- 价格 ----------
-    //   webPrice widget:
-    //     - .tsHeadline600Large  → 银行卡价 (С банками)           → cardPrice
-    //     - .pdp_bj.tsHeadline500Medium → 其他银行价 (С другими банками) → discountPrice
-    //   如果 webPrice 没找到（有些促销商品用 webSale 包裹），去 webSale 里找同样结构
-    try {
-      const priceRoot =
-        document.querySelector('[data-widget="webPrice"]') ||
-        document.querySelector('[data-widget="webSale"]');
-      if (priceRoot) {
-        const card = priceRoot.querySelector('.tsHeadline600Large');
-        if (card) out.cardPrice = card.innerText.trim().replace(/\s+/g, ' ');
-
-        // 其他银行价：pdp_bj 前缀的 class + tsHeadline500Medium
-        const other = priceRoot.querySelector('.pdp_bj.tsHeadline500Medium') ||
-                      priceRoot.querySelector('[class*="pdp_bj"].tsHeadline500Medium') ||
-                      priceRoot.querySelector('.pdp_bj');
-        if (other) {
-          const t = other.innerText.trim().replace(/\s+/g, ' ');
-          if (/\d.*¥/.test(t)) out.discountPrice = t;
-        }
-      }
-    } catch(e) { log('价格抓取错:', e); }
-
-    // ---------- 主图 ----------
-    try {
-      const img = document.querySelector('[data-widget="webGallery"] img');
-      if (img && img.src && img.src.startsWith('http')) out.mainImage = img.src;
-    } catch(e) {}
-
-    // ---------- 评分 / 评论数 ----------
-    try {
-      const scoreEl = document.querySelector('[data-widget="webSingleProductScore"]') ||
-                      document.querySelector('[data-widget="webReviewProductScore"]');
-      if (scoreEl) {
-        const t = scoreEl.innerText || '';
-        const mRating = t.match(/(\d+\.\d+)/);
-        if (mRating) out.rating = mRating[1];
-        const mCount = t.match(/(\d[\d\s]*)\s*отзыв/);
-        if (mCount) out.comments = mCount[1].replace(/\s/g, '');
-      }
-    } catch(e) {}
-
-    // ---------- 规格（webShortCharacteristics）----------
-    //   DOM 结构：.pdp_b7p.pdp_b3p（每行规格）
-    //     .pdp_bp4 > span (textSecondary)  = key，如 "Размеры, мм (ШхГхВ)"
-    //     .pdp_p4b > span/a (textPrimary)  = value，如 "780х713х1714"
-    try {
-      const specRoot = document.querySelector('[data-widget="webShortCharacteristics"]');
-      if (specRoot) {
-        const rows = specRoot.querySelectorAll('.pdp_b7p.pdp_b3p, [class*="pdp_b7p"]');
-        const specs = {};
-        rows.forEach(row => {
-          // key 在第一个 span（或 .pdp_bp4 内）
-          const keyEl = row.querySelector('.pdp_bp4 span span') ||
-                        row.querySelector('.pdp_bp4 span') ||
-                        row.querySelector('span[class*="tsBodyM"]');
-          // value 在第二个块：可能是 span（纯文本）或 a（链接）
-          const valEl = row.querySelector('.pdp_p4b .pdp_p5b') ||
-                        row.querySelector('.pdp_p4b a') ||
-                        row.querySelector('.pdp_p4b span') ||
-                        row.querySelector('.pdp_p4b');
-          if (keyEl && valEl) {
-            const k = (keyEl.innerText || '').trim();
-            // .pdp_p5b 里还嵌套了 svg 箭头，innerText 会拼进来，正则抠首段文本
-            let v = (valEl.innerText || '').trim().split('\n')[0].trim();
-            if (k && v) specs[k] = v;
-          }
-        });
-        if (Object.keys(specs).length) {
-          out.specs = specs;
-
-          // 归一化到命名字段（复用原项目规则）
-          const SPEC_RULES = [
-            ['weight',     /(^|\b)(вес|масса|weight|net\s*weight|重量|净重|毛重)(\b|$)/i],
-            ['dimensions', /(габарит|размер\s*упаковки|размеры\s*товара|размеры,\s*мм|dimension|尺寸|规格|外形)/i],
-            ['volume',     /(^|\b)(общий\s*объ[её]м|объ[её]м|capacity|volume|容量|净含量|容积)(\b|$)/i],
-            ['power',      /(^|\b)(мощность|wattage|power|功率)(\b|$)/i],
-            ['material',   /(^|\b)(материал|состав|material|composition|fabric|面料|材质|成分)(\b|$)/i],
-            ['color',      /(^|\b)(цвет|colou?r|颜色|色彩|色调)(\b|$)/i],
-            ['size',       /(^|\b)(размер|size|尺码|码数|鞋码|服装尺码)(\b|$)/i],
-            ['shelfLife',  /(срок\s*годности|срок\s*хранения|shelf\s*life|expir|保质期|保存期)/i],
-            ['origin',     /(страна[\s-]*производ|country\s*of\s*origin|производство|made\s*in|产地|原产国)/i],
-            ['season',     /(^|\b)(сезон|season|季节|季)(\b|$)/i],
-            ['ageGroup',   /(возраст|age\s*group|适用年龄|年龄段)/i],
-            ['model',      /(^|\b)(модель|model|型号)(\b|$)/i],
-          ];
-          for (const [rawKey, rawVal] of Object.entries(specs)) {
-            const keyLower = rawKey.toLowerCase();
-            for (const [field, re] of SPEC_RULES) {
-              if (!out[field] && re.test(keyLower)) {
-                out[field] = rawVal;
-                break;
-              }
-            }
-          }
-        }
-      }
-    } catch(e) { log('规格抓取错:', e); }
-
-    log('输出:', out);
-    return out;
-  }
-
+  
   // HTML 转义工具函数，防止 XSS
   function escapeHtml(str) {
     return String(str)
