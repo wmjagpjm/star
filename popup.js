@@ -1131,6 +1131,12 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
           }
           
+          // 计算 API 成功率：反爬严重时降级过滤规则，避免"反爬→bestSellerPrice 全空→商品全被过滤"
+          const apiSuccessRate = extractedProducts.length > 0
+            ? (priceData ? Object.keys(priceData).length : 0) / extractedProducts.length
+            : 0;
+          console.log('[Price Fetch] API 成功率:', Math.round(apiSuccessRate * 100) + '%');
+
           if (priceData && Object.keys(priceData).length > 0) {
             // 过滤已下架和无价格商品，去除重复
             const validProducts = [];
@@ -1138,9 +1144,11 @@ document.addEventListener('DOMContentLoaded', function() {
             extractedProducts.forEach(product => {
               const info = priceData[product.id];
               if (info) {
-                product.cardPrice = info.cardPrice || '';
-                product.discountPrice = info.price || '';
-                product.bestSellerPrice = info.bestSellerPrice || '';
+                // 只在 API 实际返回新值时覆盖，否则保留列表页已抓到的价格
+                // （Ozon 反爬 403 时 info.* 全空，老逻辑会把列表页的 cardPrice/discountPrice 擦成空串）
+                if (info.cardPrice)       product.cardPrice       = info.cardPrice;
+                if (info.price)           product.discountPrice   = info.price;
+                if (info.bestSellerPrice) product.bestSellerPrice = info.bestSellerPrice;
                 if (info.titleZh) product.title = info.titleZh;
                 if (info.mainImage) product.mainImage = info.mainImage;
                 // 归一化规格字段（只有在 info 里命中才覆盖，保留原值）
@@ -1156,10 +1164,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 if (info.brand) product.brand = info.brand;
               }
-              // 过滤：skipFilter=true 时（类目模式）只去重，不强制要求低价推荐
-              if (!skipFilter && !product.bestSellerPrice) return; // 批量模式必须有低价推荐
+              // 过滤逻辑：
+              //   - skipFilter=true（类目模式）：只要有价格就保留
+              //   - skipFilter=false（批量模式）：理想情况要求有"低价推荐"；
+              //     但若反爬导致 API 大面积失败（apiSuccessRate < 20%），降级为"只要有价格就保留"，
+              //     避免所有商品被清空只剩空白
               const hasPrice = product.cardPrice || product.discountPrice || product.bestSellerPrice;
               if (!hasPrice) return;
+              if (!skipFilter && apiSuccessRate >= 0.2 && !product.bestSellerPrice) return;
               if (seenPriceIds.has(product.id)) return;
               
               // 排除电脑和手机类商品
@@ -1188,7 +1200,10 @@ document.addEventListener('DOMContentLoaded', function() {
               showStatus(`✅ 完成！${extractedProducts.length} 个有低价推荐的FBS商品（已过滤电脑/手机）`, 'success');
             }
           } else {
-            showStatus(`✅ ${extractedProducts.length} 个商品（价格接口未返回数据）`, 'success');
+            // 详情 API 完全没返回（反爬 / 没数据）→ 仍然渲染列表页抓到的基础信息（cardPrice/discountPrice 已填）
+            renderResults(extractedProducts);
+            exportResultsBtn.disabled = extractedProducts.length === 0;
+            showStatus(`✅ ${extractedProducts.length} 个商品（详情接口无数据，已用列表页价格）`, 'success');
           }
         } else {
           showStatus(`✅ ${extractedProducts.length} 个商品（请打开 ozon.ru 任意页面以获取实时价格）`, 'success');
