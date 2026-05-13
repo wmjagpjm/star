@@ -105,7 +105,6 @@
       "css": ["content-scripts/hide-maozierp.css"],
       "js": [
         "config.js",
-        "core/ozon-product-fetcher.js",
         "content-scripts/content.js",
         "content-1688.js"
       ]
@@ -115,7 +114,6 @@
       "exclude_matches": ["*://seller.ozon.ru/*"],
       "js": [
         "config.js",
-        "core/ozon-product-fetcher.js",
         "content-scripts/smart-picker.js",
         "content-scripts/category-scraper.js"
       ]
@@ -124,7 +122,6 @@
       "matches": ["*://seller.ozon.ru/*"],
       "js": [
         "config.js",
-        "core/ozon-product-fetcher.js",
         "content-scripts/seller-bridge.js",
         "content-scripts/category-tree.js"
       ]
@@ -133,7 +130,6 @@
       "matches": ["*://*.1688.com/*"],
       "js": [
         "config.js",
-        "core/ozon-product-fetcher.js",
         "content-scripts/1688-matcher.js"
       ]
     }

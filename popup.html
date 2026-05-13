@@ -51,19 +51,21 @@ body{width:420px;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Sego
 </div>
 <div id="categoryModePanel" style="display:none;margin-bottom:8px">
   <div style="background:#fffbea;border:1px solid #ffe58f;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11px;color:#7c5200">
-    <b>💡 使用方式：</b>直接输入 Ozon 前台类目 URL 中的数字 ID<br>
-    <span style="color:#999">例如 <b>https://www.ozon.ru/category/posudomoechnye-mashiny-<u>10515</u>/</b> → 输入 <b>10515</b></span>
+    <b>💡 支持 3 种输入格式</b>（可混用，多个逗号分隔）：<br>
+    <span style="color:#7c5200">① 纯 ID：<b>10515</b></span><br>
+    <span style="color:#7c5200">② slug-id：<b>posudomoechnye-mashiny-10515</b>（推荐）</span><br>
+    <span style="color:#7c5200">③ 完整 URL：<b>https://www.ozon.ru/category/posudomoechnye-mashiny-10515/</b></span>
   </div>
   <div style="margin-bottom:6px">
-    <label style="font-size:11px;color:#555;font-weight:600">🆔 前台类目 ID（支持多个，逗号分隔）</label>
-    <input type="text" id="categoryIds" placeholder="如: 10515  或  10515,31635,10502" style="width:100%;margin-top:4px;padding:6px 8px;border:2px solid #667eea;border-radius:6px;font-size:12px;box-sizing:border-box">
+    <label style="font-size:11px;color:#555;font-weight:600">🆔 类目（支持多个，逗号分隔）</label>
+    <input type="text" id="categoryIds" placeholder="如: posudomoechnye-mashiny-10515, 10502" style="width:100%;margin-top:4px;padding:6px 8px;border:2px solid #667eea;border-radius:6px;font-size:12px;box-sizing:border-box">
   </div>
   <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">
     <span style="font-size:10px;color:#888;align-self:center">快选：</span>
-    <button class="cat-quick-btn" data-id="10515" data-name="洗碗机" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">洗碗机 10515</button>
-    <button class="cat-quick-btn" data-id="10502" data-name="冰箱" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">冰箱 10502</button>
-    <button class="cat-quick-btn" data-id="31635" data-name="双门冰箱" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">双门冰箱 31635</button>
-    <button class="cat-quick-btn" data-id="10500" data-name="家电" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">家用电器 10500</button>
+    <button class="cat-quick-btn" data-id="posudomoechnye-mashiny-10515" data-name="洗碗机" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">洗碗机</button>
+    <button class="cat-quick-btn" data-id="holodilniki-10502" data-name="冰箱" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">冰箱</button>
+    <button class="cat-quick-btn" data-id="dvuhkamernye-holodilniki-31635" data-name="双门冰箱" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">双门冰箱</button>
+    <button class="cat-quick-btn" data-id="krupnaya-bytovaya-tehnika-10500" data-name="家用电器" type="button" style="padding:3px 8px;background:#f0f4ff;color:#667eea;border:1px solid #c7d2fe;border-radius:12px;font-size:10px;cursor:pointer">家用电器</button>
   </div>
   <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center">
     <label style="font-size:10px;color:#666;white-space:nowrap">抓取数量</label>
@@ -75,7 +77,7 @@ body{width:420px;padding:16px;font-family:-apple-system,BlinkMacSystemFont,'Sego
     </select>
     <label style="font-size:10px;color:#666;white-space:nowrap;margin-left:4px">排序</label>
     <select id="catSortBy" style="padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px">
-      <option value="popular" selected>综合排序</option>
+      <option value="" selected>默认排序</option>
       <option value="price_asc">价格升序</option>
       <option value="price_desc">价格降序</option>
       <option value="rating">评分优先</option>

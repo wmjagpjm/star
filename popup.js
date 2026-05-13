@@ -114,8 +114,48 @@ function safeEvalFormula(formula, variables) {
 }
 
 // ============================================================
-// 按类目模块初始化 - 支持直接使用 Ozon 前台 URL 类目ID
+// 按类目模块初始化 - 支持 3 种输入格式：
+//   ① 纯数字 ID:   10515
+//   ② slug-id:     posudomoechnye-mashiny-10515   (推荐，避免 Ozon 重定向)
+//   ③ 完整 URL:    https://www.ozon.ru/category/posudomoechnye-mashiny-10515/
 // ============================================================
+
+/**
+ * 解析用户输入的类目条目，返回 { id, slug, path } 或 null
+ *   id:   类目数字 ID（例 "10515"）
+ *   slug: 类目 URL slug 段（例 "posudomoechnye-mashiny-10515" 或 "-10515" 无 slug 时）
+ *   path: 用于拼 URL 的路径片段（等价于 slug，但保证有值）
+ */
+function parseCategoryEntry(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim().replace(/^[\s,，]+|[\s,，]+$/g, '');
+  if (!s) return null;
+
+  // 格式 ③：完整 URL
+  //   https://www.ozon.ru/category/posudomoechnye-mashiny-10515/?sorting=popular
+  //   → path = posudomoechnye-mashiny-10515
+  const urlMatch = s.match(/ozon\.ru\/category\/([^/?#]+)/i);
+  if (urlMatch) {
+    const seg = urlMatch[1];
+    const idMatch = seg.match(/-(\d+)$/) || seg.match(/^(\d+)$/);
+    if (idMatch) return { id: idMatch[1], slug: seg, path: seg };
+    return null;
+  }
+
+  // 格式 ②：slug-id，形如 posudomoechnye-mashiny-10515
+  const slugIdMatch = s.match(/^([a-z0-9]+(?:-[a-z0-9]+)*)-(\d+)$/i);
+  if (slugIdMatch) {
+    return { id: slugIdMatch[2], slug: s, path: s };
+  }
+
+  // 格式 ①：纯数字 ID
+  if (/^\d+$/.test(s)) {
+    // 用 /-<id>/ 形式，Ozon 会自动重定向；虽然绝对能解析，但新代码会等待重定向稳定
+    return { id: s, slug: '-' + s, path: '-' + s };
+  }
+
+  return null;
+}
 
 function initCategoryModule(callbacks) {
   // callbacks = { showStatus, renderResults }（由 DOMContentLoaded 注入）
@@ -126,18 +166,18 @@ function initCategoryModule(callbacks) {
 
   const categoryIdsInput = document.getElementById('categoryIds');
 
-  // 快选按钮
+  // 快选按钮（data-id 现在是 slug-id，例如 posudomoechnye-mashiny-10515）
   document.querySelectorAll('.cat-quick-btn').forEach(btn => {
     btn.addEventListener('click', function() {
       const id = this.dataset.id;
       const name = this.dataset.name;
       const existing = (categoryIdsInput.value || '').trim();
-      const ids = existing ? existing.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const ids = existing ? existing.split(/[,，]/).map(s => s.trim()).filter(Boolean) : [];
       if (!ids.includes(id)) {
         ids.push(id);
-        categoryIdsInput.value = ids.join(',');
+        categoryIdsInput.value = ids.join(', ');
       }
-      _showStatus('已选: ' + name + ' (ID: ' + id + ')', 'success');
+      _showStatus('已选: ' + name + ' (' + id + ')', 'success');
     });
   });
 
@@ -147,22 +187,29 @@ function initCategoryModule(callbacks) {
   const searchBtn = document.getElementById('ozonPublicSearchBtn');
   if (searchBtn) {
     searchBtn.addEventListener('click', async function() {
-      const rawIds = (categoryIdsInput ? categoryIdsInput.value : '').trim();
-      if (!rawIds) {
-        _showStatus('请输入类目 ID（如: 10515）', 'error');
+      const rawInput = (categoryIdsInput ? categoryIdsInput.value : '').trim();
+      if (!rawInput) {
+        _showStatus('请输入类目 ID / slug-id / URL', 'error');
         return;
       }
 
-      const ids = rawIds.split(/[,\s，]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
-      if (ids.length === 0) {
-        _showStatus('输入的 ID 格式不正确，请填写纯数字 ID', 'error');
+      // 按逗号分隔后逐项解析（支持 ID / slug-id / 完整 URL 混用）
+      const entries = rawInput
+        .split(/[,，\n]+/)
+        .map(s => parseCategoryEntry(s))
+        .filter(Boolean);
+
+      if (entries.length === 0) {
+        _showStatus('输入格式不正确。请填写纯数字 ID、slug-id（如 holodilniki-10502）或完整 URL', 'error');
         return;
       }
 
       const limitEl = document.getElementById('catMaxCount');
       const sortEl = document.getElementById('catSortBy');
       const maxItems = limitEl ? parseInt(limitEl.value) : 100;
-      const sortMode = sortEl ? sortEl.value : 'popular';
+      // sortMode 为空字符串 = 使用 Ozon 的默认排序，URL 上不加 ?sorting
+      // （某些类目对 ?sorting=popular 的渲染不稳定，空字段更可靠）
+      const sortMode = sortEl ? sortEl.value : '';
 
       // 进度条
       const progressBar = document.getElementById('catProgressBar');
@@ -177,17 +224,21 @@ function initCategoryModule(callbacks) {
       searchBtn.disabled = true;
       searchBtn.textContent = '⏳ 正在抓取...';
       setProgress(5, '准备中...');
-      _showStatus('开始抓取 ' + ids.length + ' 个类目商品...', 'loading');
+      _showStatus('开始抓取 ' + entries.length + ' 个类目商品...', 'loading');
 
       let allProducts = [];
 
-      for (let i = 0; i < ids.length; i++) {
-        const catId = ids[i];
-        const pctBase = Math.round((i / ids.length) * 90);
-        setProgress(pctBase + 5, '正在打开类目 ' + catId + ' (' + (i + 1) + '/' + ids.length + ')...');
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const catId = entry.id;
+        const pctBase = Math.round((i / entries.length) * 90);
+        setProgress(pctBase + 5, '正在打开类目 ' + catId + ' (' + (i + 1) + '/' + entries.length + ')...');
 
         try {
-          const url = 'https://www.ozon.ru/category/-' + catId + '/?sorting=' + sortMode;
+          // 直接跳到 slug-id 终点 URL；纯 ID 情况下用 /-<id>/ 并在下面等待重定向稳定
+          // sortMode 为空时不加 ?sorting 参数，避免某些类目在带 sorting 时渲染异常
+          const qs = sortMode ? ('?sorting=' + encodeURIComponent(sortMode)) : '';
+          const url = 'https://www.ozon.ru/category/' + entry.path + '/' + qs;
 
           // 打开或复用已有 tab（必须激活标签页，否则滚动加载无法触发）
           let tab = null;
@@ -199,30 +250,22 @@ function initCategoryModule(callbacks) {
             tab = await chrome.tabs.create({ url: url, active: true });
           }
 
-          // 等待页面完成加载
-          await new Promise((resolve) => {
-            const onUpdated = (tabId, info) => {
-              if (tabId === tab.id && info.status === 'complete') {
-                chrome.tabs.onUpdated.removeListener(onUpdated);
-                resolve();
-              }
-            };
-            chrome.tabs.onUpdated.addListener(onUpdated);
-            // 超时保险：15秒
-            setTimeout(() => {
-              chrome.tabs.onUpdated.removeListener(onUpdated);
-              resolve();
-            }, 15000);
-          });
+          // 等待 tab URL 稳定（处理 Ozon 自动重定向），再等 status=complete
+          //   轮询 tab.url：连续 1s 不变即认为重定向结束
+          const finalUrl = await waitForTabUrlStable(tab.id, 15000, 1000);
+          console.log('[CategoryScraper] 类目', catId, '最终 URL:', finalUrl);
+
+          // 再等一次 complete（兜底）
+          await waitForTabComplete(tab.id, 5000);
 
           // 额外等待 JS 渲染
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 1500));
 
           setProgress(pctBase + 15, '正在抓取类目 ' + catId + ' 商品列表...');
 
           // 发消息给 content script
           const resp = await new Promise((resolve) => {
-            const tid = setTimeout(() => resolve({ success: false, error: 'content script 超时未响应' }), 30000);
+            const tid = setTimeout(() => resolve({ success: false, error: 'content script 超时未响应' }), 60000);
             chrome.tabs.sendMessage(tab.id, {
               type: 'SCRAPE_CATEGORY_PAGE',
               categoryId: catId,
@@ -265,6 +308,63 @@ function initCategoryModule(callbacks) {
       }
     });
   }
+}
+
+// 等待指定 tab 的 URL 稳定（连续 stableMs 毫秒不再变化），处理 Ozon 301/302 重定向链
+// 返回最终稳定的 URL。超时则返回当前 URL
+function waitForTabUrlStable(tabId, timeoutMs, stableMs) {
+  return new Promise((resolve) => {
+    const startTs = Date.now();
+    let lastUrl = '';
+    let lastChangeTs = Date.now();
+
+    const tick = async () => {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        const url = t && t.url ? t.url : '';
+        if (url !== lastUrl) {
+          lastUrl = url;
+          lastChangeTs = Date.now();
+        }
+        const stable = Date.now() - lastChangeTs >= stableMs;
+        const timedOut = Date.now() - startTs >= timeoutMs;
+        if ((stable && lastUrl) || timedOut) {
+          resolve(lastUrl);
+          return;
+        }
+      } catch (e) {
+        // tab 可能暂时不可访问，继续轮询
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+// 等待指定 tab 的 status=complete，超时也 resolve
+function waitForTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    const onUpdated = (id, info) => {
+      if (id === tabId && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        finish();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    // 立刻检查一次当前状态
+    chrome.tabs.get(tabId).then(t => {
+      if (t && t.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        finish();
+      }
+    }).catch(() => {});
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      finish();
+    }, timeoutMs);
+  });
 }
 
 // （保留空函数以防历史引用）
@@ -326,8 +426,12 @@ document.addEventListener('DOMContentLoaded', function() {
       const catExportLink = document.getElementById('catExportLink');
       if (catExportLink) catExportLink.style.display = 'inline';
       renderResults(extractedProducts);
-      // 补全价格/品牌/重量/配送等详情，同批量获取一样强制要求低价推荐
-      fetchRealTimePrices(null, true).then(() => {
+      // 补全价格/品牌/重量/尺寸/配送等详情
+      //   - 按用户选择的"抓取数量"为上限（#catMaxCount: 50/100/200/500）
+      //   - skipFilter=true：类目模式不强制要求有低价推荐才保留（类目页本就只卖某些价格区间）
+      const catMaxEl = document.getElementById('catMaxCount');
+      const catMax = catMaxEl ? Math.min(parseInt(catMaxEl.value, 10) || 100, extractedProducts.length) : extractedProducts.length;
+      fetchRealTimePrices(null, true, catMax).then(() => {
         const catExportLink2 = document.getElementById('catExportLink');
         if (catExportLink2) catExportLink2.style.display = 'inline';
       });
@@ -699,15 +803,20 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   // 获取实时价格的独立函数
-  async function fetchRealTimePrices(targetTabId = null, skipFilter = false) {
+  //   maxDetailFetch:
+  //     undefined → 默认 50（批量获取模式）
+  //     number    → 按类目等需要更多详情的场景，由调用方指定（上限 500 防止过慢 / 触发限流）
+  async function fetchRealTimePrices(targetTabId = null, skipFilter = false, maxDetailFetch = 50) {
     try {
-      const skus = extractedProducts.map(p => p.id).slice(0, 50);
+      // 限制：最多补全 500 条详情（Ozon 限流保护）
+      const detailLimit = Math.min(Math.max(1, maxDetailFetch | 0), 500);
+      const skus = extractedProducts.map(p => p.id).slice(0, detailLimit);
       // 查找任何 ozon.ru 页面（排除 seller）
       const ozonTabs = await chrome.tabs.query({ url: '*://*.ozon.ru/*' });
       const ozonTab = targetTabId ? ozonTabs.find(t => t.id === targetTabId) : ozonTabs.find(t => t.url && !t.url.includes('seller.ozon.ru'));
       
       if (ozonTab && ozonTab.id) {
-        showStatus(`正在获取 ${skus.length} 个商品的实时价格...`, 'loading');
+        showStatus(`正在获取 ${skus.length} 个商品的详细信息（价格/重量/尺寸）...`, 'loading');
           
           console.log('[Price Fetch] 开始获取价格，商品数量:', skus.length);
           console.log('[Price Fetch] 商品ID列表:', skus);
@@ -834,21 +943,52 @@ document.addEventListener('DOMContentLoaded', function() {
                           }
                         } catch(e) {}
                       }
-                      // 提取尺寸/重量（从商品特征中）
-                      if ((key.startsWith('webShortCharacteristics') || key.startsWith('webCharacteristics')) && (!info.weight || !info.dimensions)) {
+                      // 提取商品规格 —— 按类目自适应抓取所有特征维度
+                      //   1. info.specs: 保留全部原始 key→value，类目无关
+                      //   2. 按规则归一化到命名字段（weight / size / color / material / ...）
+                      //   3. 每个命名字段只接受第一次命中的值；规则按优先级排序（更具体的正则在前）
+                      if (key.startsWith('webShortCharacteristics') || key.startsWith('webCharacteristics')) {
                         try {
                           const obj = typeof val === 'string' ? JSON.parse(val) : val;
                           const chars = obj.characteristics || obj.shortCharacteristics || [];
+                          info.specs = info.specs || {};
+                          // 规则顺序很关键：先匹配更具体的（"размер упаковки" → dimensions），
+                          // 否则会被通用的 "размер" → size 抢先吃掉
+                          const SPEC_RULES = [
+                            ['weight',     /(^|\b)(вес|масса|weight|net\s*weight|重量|净重|毛重)(\b|$)/i],
+                            ['dimensions', /(габарит|размер\s*упаковки|размеры\s*товара|dimension|尺寸|规格|外形)/i],
+                            ['volume',     /(^|\b)(объ[её]м|capacity|volume|容量|净含量|容积)(\b|$)/i],
+                            ['power',      /(^|\b)(мощность|wattage|power|功率)(\b|$)/i],
+                            ['material',   /(^|\b)(материал|состав|material|composition|fabric|面料|材质|成分)(\b|$)/i],
+                            ['color',      /(^|\b)(цвет|colou?r|颜色|色彩|色调)(\b|$)/i],
+                            ['size',       /(^|\b)(размер|size|尺码|码数|鞋码|服装尺码)(\b|$)/i],
+                            ['shelfLife',  /(срок\s*годности|срок\s*хранения|shelf\s*life|expir|保质期|保存期)/i],
+                            ['origin',     /(страна[\s-]*производ|country\s*of\s*origin|производство|made\s*in|产地|原产国)/i],
+                            ['season',     /(^|\b)(сезон|season|季节|季)(\b|$)/i],
+                            ['ageGroup',   /(возраст|age\s*group|适用年龄|年龄段)/i],
+                            ['brandOrig',  /(бренд|brand|торговая\s*марка|品牌)/i], // 备用，常已从 webBrand 拿到
+                            ['model',      /(^|\b)(модель|model|型号)(\b|$)/i],
+                          ];
                           for (const group of chars) {
                             const items = group.short || group.characteristics || [];
                             for (const ch of items) {
-                              const k = (ch.key || ch.name || '').toLowerCase();
-                              const v = ch.value || ch.values?.[0]?.text || '';
-                              if ((k.includes('вес') || k.includes('weight') || k.includes('重量')) && !info.weight) info.weight = v;
-                              if ((k.includes('габарит') || k.includes('размер') || k.includes('dimension') || k.includes('尺寸')) && !info.dimensions) info.dimensions = v;
+                              const rawKey = String(ch.key || ch.name || '').trim();
+                              if (!rawKey) continue;
+                              const v = ch.value || (ch.values && ch.values[0] && ch.values[0].text) || '';
+                              if (!v) continue;
+                              // 1) 全量保留
+                              if (!info.specs[rawKey]) info.specs[rawKey] = String(v);
+                              // 2) 归一化
+                              const keyLower = rawKey.toLowerCase();
+                              for (const [field, re] of SPEC_RULES) {
+                                if (!info[field] && re.test(keyLower)) {
+                                  info[field] = String(v);
+                                  break;
+                                }
+                              }
                             }
                           }
-                        } catch(e) {}
+                        } catch(e) { console.warn('[Price API] 解析规格失败:', key, e); }
                       }
                       // 提取配送方式
                       if (key.startsWith('webDelivery') && !info.delivery) {
@@ -921,8 +1061,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 product.bestSellerPrice = info.bestSellerPrice || '';
                 if (info.titleZh) product.title = info.titleZh;
                 if (info.mainImage) product.mainImage = info.mainImage;
-                if (info.weight) product.weight = info.weight;
-                if (info.dimensions) product.dimensions = info.dimensions;
+                // 归一化规格字段（只有在 info 里命中才覆盖，保留原值）
+                const SPEC_FIELDS = ['weight','dimensions','volume','power','material','color','size','shelfLife','origin','season','ageGroup','model'];
+                for (const f of SPEC_FIELDS) {
+                  if (info[f]) product[f] = info[f];
+                }
+                if (info.specs && Object.keys(info.specs).length) product.specs = info.specs;
                 if (info.delivery) {
                   product.delivery = info.delivery;
                   product.isFBS = /FBS|Ozon\s*доставка|Продавец\s*хранит/i.test(info.delivery);
@@ -948,7 +1092,7 @@ document.addEventListener('DOMContentLoaded', function() {
               seenPriceIds.add(product.id);
               validProducts.push(product);
             });
-            extractedProducts = validProducts.slice(0, 50); // 只保留50个
+            extractedProducts = validProducts.slice(0, detailLimit); // 批量模式默认 50，类目按用户指定
             exportResultsBtn.disabled = extractedProducts.length === 0;
             renderResults(extractedProducts);
             showStatus(`✅ 完成！${extractedProducts.length} 个有低价推荐的FBS商品（已过滤电脑/手机）`, 'success');
@@ -973,6 +1117,57 @@ document.addEventListener('DOMContentLoaded', function() {
       .replace(/'/g, '&#39;');
   }
 
+  // ============================================================
+  // 商品特征（规格）维度处理
+  //   归一化字段：product.weight / dimensions / volume / power / material /
+  //              color / size / shelfLife / origin / season / ageGroup / model
+  //   原始字典：  product.specs = { "俄语原字段名": "值", ... }
+  // ============================================================
+
+  // 命名字段 → 中文标签 + emoji（弹窗卡片与 HTML 导出共用）
+  const SPEC_LABELS = {
+    weight:     { emoji: '⚖️',  label: '重量' },
+    dimensions: { emoji: '📐',  label: '尺寸' },
+    size:       { emoji: '👕',  label: '尺码' },
+    color:      { emoji: '🎨',  label: '颜色' },
+    material:   { emoji: '🧵',  label: '材质' },
+    volume:     { emoji: '🧴',  label: '容量' },
+    power:      { emoji: '⚡',   label: '功率' },
+    shelfLife:  { emoji: '⏰',  label: '保质期' },
+    origin:     { emoji: '🌍',  label: '产地' },
+    season:     { emoji: '🍂',  label: '季节' },
+    ageGroup:   { emoji: '👶',  label: '适用年龄' },
+    model:      { emoji: '🏷️',  label: '型号' },
+  };
+  const SPEC_FIELD_ORDER = ['weight','dimensions','size','color','material','volume','power','shelfLife','origin','season','ageGroup','model'];
+
+  // 渲染单商品的"特征 tags"行（弹窗卡片用）
+  function renderSpecTags(item) {
+    const tags = [];
+    for (const f of SPEC_FIELD_ORDER) {
+      if (item[f]) {
+        const meta = SPEC_LABELS[f];
+        tags.push(meta.emoji + ' ' + meta.label + ': ' + escapeHtml(String(item[f])));
+      }
+    }
+    if (tags.length === 0) return '';
+    return '<div style="font-size:10px;color:#6b46c1;line-height:1.6;">' + tags.join(' &nbsp;|&nbsp; ') + '</div>';
+  }
+
+  // 自适应导出：扫描所有商品，找出实际出现过值的特征列
+  //   返回 [{key, label}, ...]，按 SPEC_FIELD_ORDER 排序
+  function collectSpecColumns(products) {
+    const present = new Set();
+    for (const p of products) {
+      for (const f of SPEC_FIELD_ORDER) {
+        if (p[f]) present.add(f);
+      }
+    }
+    return SPEC_FIELD_ORDER
+      .filter(f => present.has(f))
+      .map(f => ({ key: f, label: SPEC_LABELS[f].emoji + ' ' + SPEC_LABELS[f].label }));
+  }
+
   // 统一的结果渲染函数
   function renderResults(products) {
     if (products.length > 0) {
@@ -993,6 +1188,8 @@ document.addEventListener('DOMContentLoaded', function() {
           ${item.soldSum && item.soldSum !== '-' ? '<div style="font-size:10px;color:#667eea;">月销额: ₽' + Number(item.soldSum).toLocaleString() + (item.soldCount && item.soldCount !== '-' ? ' | 销量: ' + Number(item.soldCount).toLocaleString() + '件' : '') + '</div>' : ''}
           ${item.brand && item.brand !== '-' ? '<div style="font-size:10px;color:#999;">品牌: ' + escapeHtml(item.brand) + '</div>' : ''}
           ${item.category && item.category !== '-' ? '<div style="font-size:10px;color:#999;">品类: ' + escapeHtml(item.category) + '</div>' : ''}
+          ${renderSpecTags(item)}
+          ${item.delivery ? '<div style="font-size:10px;color:#0891b2;">🚚 ' + escapeHtml(String(item.delivery)) + '</div>' : ''}
           ${item.rating || item.comments ? '<div style="font-size:10px;color:#f39c12;">' + (item.rating ? '⭐ ' + escapeHtml(String(item.rating)) : '') + (item.comments ? ' | 💬 ' + escapeHtml(String(item.comments)) : '') + '</div>' : ''}
         </div>
       `).join('');
@@ -1088,6 +1285,39 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // 通用导出函数
   function doExportHtml(products) {
+    // 自适应特征列：只导出实际有数据的维度
+    const specCols = collectSpecColumns(products);
+    const specHeaderCells = specCols.map(c => '<th>' + c.label + '</th>').join('');
+
+    // 数据完整度诊断：统计每个字段实际命中了多少条
+    // 帮助用户一眼看出某列空白到底是 API 限制 还是 数据没补全
+    function countFilled(field, pred) {
+      return products.filter(p => {
+        const v = p[field];
+        if (v === undefined || v === null || v === '' || v === '-') return false;
+        return pred ? pred(v) : true;
+      }).length;
+    }
+    const total = products.length;
+    const stats = {
+      '银行卡价': countFilled('cardPrice'),
+      '平台折扣价': countFilled('discountPrice'),
+      '低价推荐': countFilled('bestSellerPrice'),
+      '主图':     countFilled('mainImage'),
+      '品牌':     countFilled('brand'),
+      '发货模式':  products.filter(p => p.salesSchema && p.salesSchema !== '-').length,
+      '月销额':    countFilled('soldSum'),
+      '物流配送':  countFilled('delivery'),
+      '评分':     countFilled('rating'),
+      '评论数':    countFilled('comments'),
+    };
+    // 月销额/物流等字段在类目模式下可能本就没数据，给出友好的注释
+    function pct(n) { return total ? Math.round(n / total * 100) : 0; }
+    const statsHtml = Object.entries(stats).map(([k, n]) => {
+      const p = pct(n);
+      const color = p >= 80 ? '#2d8f4e' : p >= 30 ? '#e67e22' : '#c0392b';
+      return '<span style="color:' + color + ';margin-right:12px;">' + k + ': ' + n + '/' + total + ' (' + p + '%)</span>';
+    }).join('');
     const htmlContent = `
 <!DOCTYPE html>
 <html>
@@ -1096,11 +1326,11 @@ document.addEventListener('DOMContentLoaded', function() {
   <title>哨兵 - 选品结果</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-    .container { max-width: 1600px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .container { max-width: 1800px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
     h1 { color: #667eea; margin-bottom: 10px; }
     .meta { color: #666; margin-bottom: 20px; font-size: 14px; }
     table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-    th, td { border: 1px solid #ddd; padding: 10px 8px; text-align: left; font-size: 13px; }
+    th, td { border: 1px solid #ddd; padding: 10px 8px; text-align: left; font-size: 13px; vertical-align: top; }
     th { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: bold; white-space: nowrap; }
     tr:nth-child(even) { background-color: #f9f9f9; }
     tr:hover { background-color: #f0f0f0; }
@@ -1113,6 +1343,7 @@ document.addEventListener('DOMContentLoaded', function() {
     .fbs-no { color: #999; }
     .thumb { width: 60px; height: 60px; object-fit: contain; border-radius: 4px; background: #f5f5f5; }
     td.name-col { max-width: 260px; word-break: break-word; }
+    td.spec-col { max-width: 160px; word-break: break-word; color: #444; }
   </style>
 </head>
 <body>
@@ -1121,6 +1352,11 @@ document.addEventListener('DOMContentLoaded', function() {
     <div class="meta">
       <p>导出时间: ${new Date().toLocaleString('zh-CN')}</p>
       <p>商品数量: ${products.length}</p>
+      <p>特征维度（自适应）: ${specCols.length ? specCols.map(c => c.label).join(' · ') : '无'}</p>
+      <p style="font-size:12px;line-height:1.8;padding:8px 10px;background:#f8f9fa;border-radius:6px;">
+        <b>📊 数据完整度：</b><br>${statsHtml}<br>
+        <span style="color:#888;font-size:11px;">💡 月销额 / 月销量 仅在"批量获取商品"模式下可用（类目搜索走前台 API，无此数据）；重量/尺寸/品牌/评分等依赖详情补全步骤，若大量为空请确认 ozon.ru 登录 tab 未关闭。</span>
+      </p>
     </div>
     <table>
       <thead>
@@ -1133,8 +1369,7 @@ document.addEventListener('DOMContentLoaded', function() {
           <th>💲 低价推荐</th>
           <th>发货模式</th>
           <th>月销额</th>
-          <th>尺寸</th>
-          <th>重量</th>
+          ${specHeaderCells}
           <th>物流配送</th>
           <th>品牌</th>
           <th>评分</th>
@@ -1145,23 +1380,23 @@ document.addEventListener('DOMContentLoaded', function() {
       <tbody>
         ${products.map(item => {
           const shortUrl = item.url || `https://www.ozon.ru/product/${item.id}/`;
+          const specCells = specCols.map(c => '<td class="spec-col">' + (item[c.key] ? escapeHtml(String(item[c.key])) : '-') + '</td>').join('');
           return `
             <tr>
-              <td>${item.mainImage ? '<img src="' + item.mainImage + '" class="thumb" loading="lazy">' : '-'}</td>
-              <td class="product-id">${item.id}</td>
-              <td class="name-col">${item.title}</td>
-              <td class="discount-price">${item.cardPrice || '-'}</td>
-              <td class="promo-price">${item.discountPrice || '-'}</td>
-              <td style="color:#e67e22;font-weight:bold;">${item.bestSellerPrice || '-'}</td>
-              <td class="${item.isFBS ? 'fbs-yes' : 'fbs-no'}">${item.isFBS ? '✅ FBS' : '❌ ' + (item.salesSchema || '')}</td>
+              <td>${item.mainImage ? '<img src="' + escapeHtml(item.mainImage) + '" class="thumb" loading="lazy">' : '-'}</td>
+              <td class="product-id">${escapeHtml(item.id)}</td>
+              <td class="name-col">${escapeHtml(item.title)}</td>
+              <td class="discount-price">${escapeHtml(item.cardPrice || '-')}</td>
+              <td class="promo-price">${escapeHtml(item.discountPrice || '-')}</td>
+              <td style="color:#e67e22;font-weight:bold;">${escapeHtml(item.bestSellerPrice || '-')}</td>
+              <td class="${item.isFBS ? 'fbs-yes' : 'fbs-no'}">${item.isFBS ? '✅ FBS' : '❌ ' + escapeHtml(item.salesSchema || '')}</td>
               <td>${item.soldSum && item.soldSum !== '-' ? '₽' + Number(item.soldSum).toLocaleString() : '-'}</td>
-              <td>${item.dimensions || '-'}</td>
-              <td>${item.weight || '-'}</td>
-              <td>${item.delivery || (item.isFBS ? 'FBS (Ozon配送)' : item.salesSchema || '-')}</td>
-              <td>${item.brand || '-'}</td>
-              <td>${item.rating || '-'}</td>
-              <td>${item.comments || '-'}</td>
-              <td><a href="${shortUrl}" class="product-link" target="_blank">查看</a></td>
+              ${specCells}
+              <td>${escapeHtml(item.delivery || (item.isFBS ? 'FBS (Ozon配送)' : (item.salesSchema || '-')))}</td>
+              <td>${escapeHtml(item.brand || '-')}</td>
+              <td>${escapeHtml(String(item.rating || '-'))}</td>
+              <td>${escapeHtml(String(item.comments || '-'))}</td>
+              <td><a href="${escapeHtml(shortUrl)}" class="product-link" target="_blank">查看</a></td>
             </tr>
           `;
         }).join('')}
